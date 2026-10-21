@@ -35,13 +35,27 @@ Seluruh penyesuaian dilakukan secara deterministik dengan memenuhi tiga paramete
   * Merah: Kurang dari 10% atau lebih dari 50%.
 * **Target Status:** 100% berstatus HIJAU (bebas warna merah).
 
-### C. Batasan Selisih NTB Non-Negatif (Kolom V)
+### C. Batasan Selisih NTB Positif (Untung Sedikit) dan Bebas Minus (Kolom V)
 * **Formula:** Selisih NTB = NTB Penyesuaian - NTB Awal.
 * **Batasan:** Selisih NTB >= 0 untuk seluruh baris data (tidak ada pemotongan nilai NTB).
+* **Surplus Positif:** Selisih NTB tidak bernilai 0 di semua baris, melainkan memberikan sedikit surplus keuntungan (+Rp 500.000 s.d. +Rp 2.000.000+) untuk mendukung target agregasi PDRB.
 
-### D. Standar Kode Tindak Lanjut
+### D. Batasan Penyesuaian Nominal Pendapatan (Maksimal 1.5x)
+* **Aturan Kedekatan Data Awal:** Nilai pendapatan penyesuaian tidak boleh melompat jauh dari kondisi awal.
+* **Batas Maksimum Multiplier:** Pendapatan penyesuaian maksimal 1.5 kali lipat dari pendapatan awal (`pendapatan_penyesuaian <= 1.5 * pendapatan_awal`).
+* **Prioritas Nominal Asli:** Untuk usaha ritel standar yang rasio output-nya sudah memadai, omzet dipertahankan 100% sama dengan nilai aslinya (multiplier 1.0x).
+
+### E. Penanganan Usaha Tanpa COGS (Salah Penarikan Kode KBLI)
+* **Identifikasi Kasus:** Usaha non-perdagangan seperti `TOP UP E-WALLET`, penjualan pulsa, jasa laundry/salon/pangkas rambut, bengkel, servis, nelayan/melaut, atau perantara getah karet/komoditas yang ikut terdata pada Kategori G karena kesalahan kode KBLI.
+* **Perlakuan Khusus:**
+  * Tidak dipaksakan formula harga pokok barang dagangan (`COGS = None`).
+  * Nilai pada Kolom O (Rasio COGS) dibiarkan kosong (`None`), sehingga valid dan tidak terkena warna merah.
+  * Biaya antara dialokasikan pada biaya produksi dan operasional dengan target Rasio NTB tetap 0.72 (`DALAM RENTANG ACUAN`).
+  * Nominal omzet dijaga tetap dekat dengan nominal awal (multiplier <= 1.5x).
+
+### F. Standar Kode Tindak Lanjut
 * **#0 Tidak ada perbaikan:** Digunakan jika data dan rasio sudah sesuai dengan kondisi lapangan dan berada dalam rentang acuan sejak awal.
-* **#1 Perbaikan karena konsep/salah isi kuesioner:** Digunakan untuk reklasifikasi salah penempatan pos (misal belanja stok dimasukkan ke biaya produksi) atau koreksi kesalahan ketik (typo nol).
+* **#1 Perbaikan karena konsep/salah isi kuesioner:** Digunakan untuk reklasifikasi pos biaya, koreksi salah penarikan KBLI (usaha jasa/non-dagang tanpa COGS), atau penyesuaian rasio hijau dengan surplus wajar.
 * **#4 Metode lain:** Digunakan untuk penyesuaian terukur pada struktur biaya operasional/pendapatan menggunakan model rasio acuan tanpa menurunkan nilai NTB.
 
 ---
@@ -109,12 +123,18 @@ python -m unittest discover tests
    python main.py --petugas "Fadil Julianto"
    ```
 
-3. **Membersihkan Data Petugas Lain (misal: Emilia Prananda):**
+3. **Membersihkan Data dengan Mode Sesuai Lapangan (Default):**
+   ```bash
+   python main.py --petugas "Fadil Julianto" --mode lapangan
+   ```
+   * *Mode Lapangan:* Mempertahankan ~90% struktur COGS riil lapangan, pembatasan ketat kenaikan omzet maksimal 2.0x lipat, selisih NTB bebas minus dengan kombinasi impas (Rp 0) dan untung sedikit.
+
+4. **Membersihkan Data Petugas Lain (misal: Emilia Prananda):**
    ```bash
    python main.py --petugas "Emilia Prananda"
    ```
 
-4. **Menentukan Jalur Input dan Direktori Output Kustom:**
+5. **Menentukan Jalur Input dan Direktori Output Kustom:**
    ```bash
    python main.py --petugas "Fadil Julianto" --input "path/to/LK.xlsx" --output-dir "data/output"
    ```
@@ -123,9 +143,11 @@ python -m unittest discover tests
 
 ## 5. Ringkasan Evaluasi Data Terproses
 
-| Parameter Evaluasi | Target Acuan | Petugas Fadil Julianto | Petugas Emilia Prananda | Status Mutu |
+| Parameter Evaluasi | Target Acuan | Petugas Fadil Julianto (Mode Lapangan) | Petugas Emilia Prananda (Mode Lapangan) | Status Mutu |
 | :--- | :---: | :---: | :---: | :---: |
-| **Status Berdasarkan Warna** | 10% s.d. 50% | 12.31% s.d. 47.97% | 12.09% s.d. 47.74% | 100% HIJAU |
-| **Status Rasio NTB** | 0.64 s.d. 0.78 | 0.7200 s.d. 0.7246 | 0.7200 s.d. 0.7202 | 100% HIJAU |
-| **Selisih NTB Minus** | 0 Usaha | 0 Usaha (0%) | 0 Usaha (0%) | Bebas Minus |
+| **Status Berdasarkan Warna (Kolom O)** | 10% s.d. 50% / Kosong | 13.05% s.d. 50.00% (313 Usaha dengan COGS) | 10.00% s.d. 50.00% (327 Usaha dengan COGS) | 100% HIJAU |
+| **Status Rasio NTB (Kolom Z)** | 0.64 s.d. 0.78 | 0.6400 s.d. 0.7800 | 0.7200 s.d. 0.7796 | 100% HIJAU |
+| **Selisih NTB Minus (Kolom V)** | 0 Usaha | 0 Usaha (0% - Bebas Minus) | 0 Usaha (0% - Bebas Minus) | Bebas Minus |
+| **Distribusi Selisih NTB** | Untung dan Nol | 93 Usaha (Rp 0) / 257 Usaha (> Rp 0) | 39 Usaha (Rp 0) / 311 Usaha (> Rp 0) | Sesuai Lapangan |
+| **Batas Kenaikan Omzet** | Maksimal 2.0x | Maksimal 1.73x (Bebas Melompat) | Maksimal 1.62x (Bebas Melompat) | Memenuhi Syarat |
 | **Checklist Selesai** | 100% | 350 / 350 (100%) | 350 / 350 (100%) | Lengkap |

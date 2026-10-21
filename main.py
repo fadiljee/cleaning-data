@@ -8,6 +8,7 @@ from pathlib import Path
 import openpyxl
 
 from src.cleaner import DataCleaner
+from src.cleaner_lapangan import DataCleanerLapangan
 from src.excel_exporter import ExcelExporter
 from src.pdf_reporter import PDFReporter
 from src.config import BASE_DIR, DEFAULT_INPUT_FILE
@@ -126,6 +127,13 @@ def main():
         default=".",
         help="Direktori penyimpanan hasil output Excel dan PDF (default: folder saat ini)"
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["lapangan", "standard"],
+        default="lapangan",
+        help="Mode pembersihan: 'lapangan' (90% sesuai lapangan, max 2x) atau 'standard'"
+    )
 
     args = parser.parse_args()
 
@@ -148,7 +156,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cleaner = DataCleaner(str(input_file))
+    if args.mode == "lapangan":
+        print("[INFO] Menggunakan Mode 'Sesuai Lapangan' (max 2x lipat, selisih NTB >= 0)")
+        cleaner = DataCleanerLapangan(str(input_file))
+    else:
+        print("[INFO] Menggunakan Mode 'Standard'")
+        cleaner = DataCleaner(str(input_file))
+
     process_petugas(cleaner, petugas_target, output_dir)
 
 

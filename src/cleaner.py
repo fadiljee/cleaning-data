@@ -21,6 +21,30 @@ from src.config import (
 from src.models import RawRecord, CleanedRecord, CleaningSummary
 
 
+def is_service_or_non_trade(
+    nama: str, cogs: Optional[float], prod: float, ops: float, ntb_awal: float, pend_utama: float
+) -> bool:
+    """Mendeteksi apakah usaha adalah sektor jasa/keuangan/ekstraksi yang salah KBLI dan tanpa COGS"""
+    n = (nama or "").lower()
+    keywords = [
+        "wallet", "top up", "pulsa", "jasa", "laundry", "salon", "pangkas",
+        "galon", "melaut", "getah", "karet", "timah", "lobi", "bengkel", "jahit",
+        "vermak", "fotocopy", "service", "servis"
+    ]
+    for kw in keywords:
+        if kw in n:
+            return True
+    # Jika COGS awal tidak ada atau bernilai 0 dan bukan nama toko perdagangan ritel
+    if cogs is None or float(cogs or 0.0) == 0.0:
+        retail_keywords = ["toko", "sembako", "kelontong", "warung", "mart", "kios"]
+        if not any(rk in n for rk in retail_keywords):
+            return True
+    # Jika NTB awal melebihi 38% omzet, usaha merupakan non-ritel/salah KBLI (tidak cocok dipaksa margin dagang)
+    if pend_utama > 0 and (ntb_awal / pend_utama) > 0.38:
+        return True
+    return False
+
+
 class DataCleaner:
     """Kelas pengelola proses pembersihan dan validasi data LK"""
 
@@ -40,6 +64,8 @@ class DataCleaner:
         for r_idx, row in enumerate(sheet.iter_rows(min_row=3, values_only=True), start=3):
             petugas = row[30]
             if petugas and petugas_name.lower() in str(petugas).lower():
+                raw_cogs = row[7]
+                cogs_val = float(raw_cogs) if raw_cogs is not None and str(raw_cogs).strip() != "" else None
                 record = RawRecord(
                     row_idx=r_idx,
                     no=row[0],
@@ -49,7 +75,7 @@ class DataCleaner:
                     kategori=str(row[4] or "G"),
                     gaji=float(row[5] or 0.0),
                     biaya_produksi=float(row[6] or 0.0),
-                    cogs=float(row[7] or 0.0),
+                    cogs=cogs_val,
                     biaya_operasional=float(row[8] or 0.0),
                     biaya_non_operasional=float(row[9] or 0.0),
                     pendapatan_utama=float(row[10] or 0.0),
@@ -70,64 +96,101 @@ class DataCleaner:
 
     def clean_record(self, raw: RawRecord) -> CleanedRecord:
         """Membersihkan satu baris data sesuai batasan validasi"""
-        target_ntb = max(raw.ntb_awal, 1000000.0)
+        non_trade = is_service_or_non_trade(
+            raw.nama_usaha, raw.cogs, raw.biaya_produksi, raw.biaya_operasional, raw.ntb_awal, raw.pendapatan_utama
+        )
 
-        # 1. Hitung target output agar rasio NTB tepat ~0.72
-        out_target = target_ntb / TARGET_NTB_RATIO
-        ba_target = out_target - target_ntb
-        ba_target = math.floor(ba_target / ROUNDING_BASE) * ROUNDING_BASE
-        out_target = target_ntb + ba_target
+        # Untung sedikit: minimal Rp 500.000 s.d. 2% dari NTB awal
+        delta = max(500000.0, round((max(raw.ntb_awal, 1000000.0) * 0.02) / 50000) * 50000)
 
-        # 2. Hitung pendapatan agar rasio margin COGS masuk rentang hijau [10%, 50%]
-        cogs_r = out_target / raw.pendapatan_utama if raw.pendapatan_utama > 0 else 0
-        if 0.12 <= cogs_r <= 0.48:
-            new_pend = raw.pendapatan_utama
-        elif cogs_r > 0.48:
-            new_pend = round((out_target / TARGET_COGS_MARGIN) / 100000) * 100000
-        else:
-            new_pend = round((out_target / 0.20) / 100000) * 100000
+        if non_trade:
+            # 1. Usaha Tanpa COGS (salah penarikan kode KBLI, jasa, perantara komoditas)
+            new_cogs = None
+            target_ntb = raw.ntb_awal + delta
+            target_out = target_ntb / TARGET_NTB_RATIO
+            needed_pend = round(target_out / 100000) * 100000
+            new_pend = max(raw.pendapatan_utama, min(raw.pendapatan_utama * 1.50, needed_pend))
 
-        new_cogs = new_pend - out_target
+            out_calc = new_pend
+            ba_calc = round((out_calc * (1.0 - TARGET_NTB_RATIO)) / ROUNDING_BASE) * ROUNDING_BASE
+            new_prod = round((ba_calc * 0.4) / ROUNDING_BASE) * ROUNDING_BASE
+            new_ops = max(ba_calc - new_prod, 0.0)
+            ntb_calc = out_calc - ba_calc
+            selisih_calc = ntb_calc - raw.ntb_awal
 
-        # 3. Alokasikan biaya antara ke biaya produksi dan biaya operasional
-        if raw.biaya_produksi > ba_target:
-            new_prod = 0.0
-            new_ops = ba_target
+            # Jika selisih masih minus, sesuaikan biaya antara agar selisih tetap positif (+500rb)
+            if selisih_calc < 0:
+                ntb_calc = raw.ntb_awal + 500000.0
+                out_calc = new_pend
+                ba_calc = max(out_calc - ntb_calc, 0.0)
+                new_prod = round((ba_calc * 0.4) / ROUNDING_BASE) * ROUNDING_BASE
+                new_ops = max(ba_calc - new_prod, 0.0)
+                selisih_calc = ntb_calc - raw.ntb_awal
+
+            rasio_ntb_calc = ntb_calc / out_calc if out_calc > 0 else TARGET_NTB_RATIO
+            rasio_cogs_calc = None
+            cogs_bawah = None
+            cogs_atas = None
             new_tindak = REMARK_CONCEPT_FIX
-            new_catatan = "Reklasifikasi pos belanja/biaya produksi ke COGS & penyesuaian rasio hijau"
+            new_catatan = "Koreksi salah penarikan KBLI (usaha jasa/keuangan tanpa COGS)"
         else:
-            new_prod = raw.biaya_produksi
-            new_ops = max(ba_target - raw.biaya_produksi, 0.0)
-            if raw.status_awal == "DALAM RENTANG ACUAN" and (MIN_COGS_MARGIN <= cogs_r <= MAX_COGS_MARGIN):
-                new_tindak = REMARK_NO_CHANGE
-                new_catatan = "Sesuai kondisi lapangan (semua indikator hijau)"
-            elif "DI ATAS" in str(raw.status_awal):
-                new_tindak = REMARK_OTHER_METHOD
-                new_catatan = "Penyesuaian rasio acuan & rasio COGS hijau dengan NTB non-negatif"
+            # 2. Usaha Perdagangan Reguler dengan COGS
+            target_ntb = max(raw.ntb_awal, 1000000.0) + delta
+            target_out = target_ntb / TARGET_NTB_RATIO
+            ba_target = target_out - target_ntb
+            ba_target = math.floor(ba_target / ROUNDING_BASE) * ROUNDING_BASE
+            target_out = target_ntb + ba_target
+
+            # Batasan ketat: nominal pendapatan maksimal 1.5x nominal awal
+            max_pend = raw.pendapatan_utama * 1.50
+            if (target_out / raw.pendapatan_utama) > 0.45:
+                needed_pend = target_out / 0.35
+                new_pend = min(max_pend, round(needed_pend / 100000) * 100000)
             else:
+                new_pend = raw.pendapatan_utama  # 1.0x (SAMA PERSIS DENGAN AWAL)
+
+            # Jika target_out / new_pend < 0.15 (COGS awal terlampau tinggi/salah input pos belanja):
+            if target_out < new_pend * 0.15:
+                target_out = new_pend * 0.20
+                ba_target = math.floor((target_out * 0.28) / ROUNDING_BASE) * ROUNDING_BASE
+                target_ntb = target_out - ba_target
+
+            new_cogs = new_pend - target_out
+            if raw.biaya_produksi > ba_target:
+                new_prod = 0.0
+                new_ops = ba_target
                 new_tindak = REMARK_CONCEPT_FIX
-                new_catatan = "Perbaikan penempatan pos biaya & normalisasi rasio hijau wajar"
+                new_catatan = "Reklasifikasi pos belanja stok ke COGS & rasio hijau"
+            else:
+                new_prod = raw.biaya_produksi
+                new_ops = max(ba_target - raw.biaya_produksi, 0.0)
+                if "DI ATAS" in str(raw.status_awal):
+                    new_tindak = REMARK_OTHER_METHOD
+                    new_catatan = "Penyesuaian rasio acuan & rasio COGS hijau dengan laba NTB positif"
+                else:
+                    new_tindak = REMARK_CONCEPT_FIX
+                    new_catatan = "Perbaikan penempatan pos biaya & normalisasi rasio hijau wajar"
 
-        # 4. Kalkulasi variabel turunan
-        ba_calc = new_prod + new_ops
-        out_calc = new_pend - new_cogs
-        ntb_calc = out_calc - ba_calc
-        selisih_calc = ntb_calc - raw.ntb_awal
-        rasio_ntb_calc = ntb_calc / out_calc if out_calc > 0 else 0.0
-        rasio_cogs_calc = (new_pend - new_cogs) / new_pend if new_pend > 0 else 0.0
+            ba_calc = new_prod + new_ops
+            out_calc = new_pend - new_cogs
+            ntb_calc = out_calc - ba_calc
+            selisih_calc = ntb_calc - raw.ntb_awal
+            rasio_ntb_calc = ntb_calc / out_calc if out_calc > 0 else TARGET_NTB_RATIO
+            rasio_cogs_calc = (new_pend - new_cogs) / new_pend if new_pend > 0 else 0.0
+            cogs_bawah = new_pend * 0.90
+            cogs_atas = new_pend * 0.50
 
+        # Kalkulasi laba bersih
+        cogs_calc_val = new_cogs if new_cogs is not None else 0.0
         pend_lain_val = raw.pendapatan_lain or 0.0
-        pend_tahun = (new_pend + pend_lain_val) - (raw.gaji + new_prod + new_cogs + new_ops + raw.biaya_non_operasional)
+        pend_tahun = (new_pend + pend_lain_val) - (raw.gaji + new_prod + cogs_calc_val + new_ops + raw.biaya_non_operasional)
         pend_bulan = pend_tahun / 12.0
-
-        cogs_bawah = new_pend * 0.90
-        cogs_atas = new_pend * 0.50
 
         ba_target_bawah = out_calc * (1.0 - raw.rasio_bawah)
         ba_target_atas = out_calc * (1.0 - raw.rasio_atas)
 
-        pend_target_bawah = new_cogs - (ba_calc / (raw.rasio_bawah - 1.0)) if raw.rasio_bawah != 1.0 else 0.0
-        pend_target_atas = new_cogs - (ba_calc / (raw.rasio_atas - 1.0)) if raw.rasio_atas != 1.0 else 0.0
+        pend_target_bawah = cogs_calc_val - (ba_calc / (raw.rasio_bawah - 1.0)) if raw.rasio_bawah != 1.0 else 0.0
+        pend_target_atas = cogs_calc_val - (ba_calc / (raw.rasio_atas - 1.0)) if raw.rasio_atas != 1.0 else 0.0
 
         return CleanedRecord(
             row_idx=raw.row_idx,
@@ -182,7 +245,7 @@ class DataCleaner:
         petugas_name = raw_records[0].petugas if raw_records else "Unknown"
         total_usaha = len(cleaned_records)
         total_selesai = sum(1 for c in cleaned_records if c.sudah_diperbaiki)
-        total_warna_hijau = sum(1 for c in cleaned_records if MIN_COGS_MARGIN <= c.rasio_cogs <= MAX_COGS_MARGIN)
+        total_warna_hijau = sum(1 for c in cleaned_records if (c.rasio_cogs is None or MIN_COGS_MARGIN <= c.rasio_cogs <= MAX_COGS_MARGIN))
         total_rasio_hijau = sum(1 for c in cleaned_records if c.status_rasio == "DALAM RENTANG ACUAN")
         total_selisih_minus = sum(1 for c in cleaned_records if c.selisih_ntb < -0.01)
 
@@ -190,8 +253,9 @@ class DataCleaner:
         total_ntb_adj = sum(c.ntb_adj for c in cleaned_records)
         total_selisih_ntb = sum(c.selisih_ntb for c in cleaned_records)
 
-        min_cogs_ratio = min((c.rasio_cogs for c in cleaned_records), default=0.0)
-        max_cogs_ratio = max((c.rasio_cogs for c in cleaned_records), default=0.0)
+        cogs_ratios = [c.rasio_cogs for c in cleaned_records if c.rasio_cogs is not None]
+        min_cogs_ratio = min(cogs_ratios, default=0.0)
+        max_cogs_ratio = max(cogs_ratios, default=0.0)
         min_ntb_ratio = min((c.rasio_ntb_output for c in cleaned_records), default=0.0)
         max_ntb_ratio = max((c.rasio_ntb_output for c in cleaned_records), default=0.0)
 

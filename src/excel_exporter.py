@@ -100,10 +100,14 @@ class ExcelExporter:
                         cell.number_format = "#,##0"
                         cell.alignment = Alignment(horizontal="right", vertical="center")
                 elif col_idx == 15:
-                    cell.number_format = "0.00%"
-                    cell.alignment = Alignment(horizontal="right", vertical="center")
-                    cell.fill = fill_green
-                    cell.font = font_green_bold
+                    if val is not None:
+                        cell.number_format = "0.00%"
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                        cell.fill = fill_green
+                        cell.font = font_green_bold
+                    else:
+                        cell.value = ""
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
                 elif col_idx in [23, 24, 25]:
                     cell.number_format = "0.0000"
                     cell.alignment = Alignment(horizontal="right", vertical="center")
@@ -252,13 +256,21 @@ class ExcelExporter:
                 if is_even:
                     cell.fill = fill_zebra
                 if c_i in [5, 6, 7, 8, 9, 10]:
-                    cell.number_format = "#,##0"
-                    cell.alignment = Alignment(horizontal="right")
+                    if val is not None:
+                        cell.number_format = "#,##0"
+                        cell.alignment = Alignment(horizontal="right")
+                    else:
+                        cell.value = "-"
+                        cell.alignment = Alignment(horizontal="center")
                 elif c_i == 4:
-                    cell.number_format = "0.00%"
-                    cell.alignment = Alignment(horizontal="right")
-                    cell.fill = fill_green
-                    cell.font = font_green_bold
+                    if val is not None:
+                        cell.number_format = "0.00%"
+                        cell.alignment = Alignment(horizontal="right")
+                        cell.fill = fill_green
+                        cell.font = font_green_bold
+                    else:
+                        cell.value = "-"
+                        cell.alignment = Alignment(horizontal="center")
                 elif c_i == 11:
                     cell.number_format = "0.0000"
                     cell.alignment = Alignment(horizontal="right")

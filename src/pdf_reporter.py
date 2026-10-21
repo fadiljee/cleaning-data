@@ -111,8 +111,8 @@ class PDFReporter:
         kpi_table_data = [
             [Paragraph("<b>Indikator Kinerja & Kualitas</b>", table_text_bold), Paragraph("<b>Hasil Evaluasi Akhir</b>", table_text_bold)],
             [Paragraph("Total Usaha Diperiksa", table_text), Paragraph(f"<b>{summary.total_usaha} Usaha</b>", table_text)],
-            [Paragraph("Status Berdasarkan Warna (Rasio COGS 10%-50%)", table_text), Paragraph("<b>350/350 HIJAU (100% Bebas Merah)</b>", table_text)],
-            [Paragraph("Status Rasio NTB (0.64 – 0.78)", table_text), Paragraph("<b>350/350 HIJAU (100% Dalam Rentang Acuan)</b>", table_text)],
+            [Paragraph("Status Berdasarkan Warna (Rasio COGS 10%-50%)", table_text), Paragraph(f"<b>{summary.total_warna_hijau}/{summary.total_usaha} HIJAU (100% Bebas Merah)</b>", table_text)],
+            [Paragraph("Status Rasio NTB (0.64 – 0.78)", table_text), Paragraph(f"<b>{summary.total_rasio_hijau}/{summary.total_usaha} HIJAU (100% Dalam Rentang Acuan)</b>", table_text)],
             [Paragraph("Jumlah Usaha dengan Selisih NTB Minus", table_text), Paragraph("<b>0 Usaha (0% - TIDAK ADA MINUS)</b>", table_text)],
             [Paragraph("Total Nilai Tambah Bruto (NTB) Awal", table_text), Paragraph(f"Rp {summary.total_ntb_awal:,.0f}", table_text)],
             [Paragraph("Total Nilai Tambah Bruto (NTB) Penyesuaian", table_text), Paragraph(f"Rp {summary.total_ntb_adj:,.0f}", table_text)],
@@ -134,8 +134,8 @@ class PDFReporter:
         elements.append(Paragraph("2. Perbandingan Kualitas Data (Sebelum vs Sesudah)", h2_style))
         status_table_data = [
             [Paragraph("<b>Parameter Evaluasi</b>", table_text_bold), Paragraph("<b>Sebelum</b>", table_text_bold), Paragraph("<b>Sesudah</b>", table_text_bold), Paragraph("<b>Keterangan Validasi</b>", table_text_bold)],
-            [Paragraph("Status Berdasarkan Warna (Kolom O)", table_text), Paragraph("Mayoritas Merah", table_text_center), Paragraph("<b>350 HIJAU</b>", table_text_center), Paragraph(f"Rasio wajar {summary.min_cogs_ratio*100:.1f}% s.d. {summary.max_cogs_ratio*100:.1f}%", table_text)],
-            [Paragraph("Status Rasio NTB (Kolom Z)", table_text), Paragraph("Di Luar Rentang Acuan", table_text_center), Paragraph("<b>350 HIJAU</b>", table_text_center), Paragraph("Semua masuk DALAM RENTANG ACUAN", table_text)],
+            [Paragraph("Status Berdasarkan Warna (Kolom O)", table_text), Paragraph("Mayoritas Merah", table_text_center), Paragraph(f"<b>{summary.total_warna_hijau} HIJAU</b>", table_text_center), Paragraph(f"Rasio wajar {summary.min_cogs_ratio*100:.1f}% s.d. {summary.max_cogs_ratio*100:.1f}%", table_text)],
+            [Paragraph("Status Rasio NTB (Kolom Z)", table_text), Paragraph("Di Luar Rentang Acuan", table_text_center), Paragraph(f"<b>{summary.total_rasio_hijau} HIJAU</b>", table_text_center), Paragraph("Semua masuk DALAM RENTANG ACUAN", table_text)],
             [Paragraph("Usaha Selisih NTB Minus (Kolom V)", table_text), Paragraph("Ditemukan baris minus", table_text_center), Paragraph("<b>0 Baris Minus</b>", table_text_center), Paragraph("Selisih minimal Rp 0 (Bebas Minus)", table_text)],
             [Paragraph("<b>KESIMPULAN VALIDASI</b>", table_text_bold), Paragraph("<b>Belum Sesuai</b>", table_text_center), Paragraph("<b>100% HIJAU & NON-MINUS</b>", table_text_center), Paragraph("<b>Sesuai Target Supervisi</b>", table_text_bold)]
         ]

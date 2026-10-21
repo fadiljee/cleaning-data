@@ -16,7 +16,7 @@ class RawRecord:
     kategori: str
     gaji: float
     biaya_produksi: float
-    cogs: float
+    cogs: Optional[float]
     biaya_operasional: float
     biaya_non_operasional: float
     pendapatan_utama: float
@@ -43,16 +43,16 @@ class CleanedRecord:
     kategori: str
     gaji: float
     biaya_produksi: float
-    cogs: float
+    cogs: Optional[float]
     biaya_operasional: float
     biaya_non_operasional: float
     pendapatan_utama: float
     pendapatan_lain: Optional[float]
     pendapatan_per_tahun: float
     pendapatan_per_bulan: float
-    rasio_cogs: float
-    cogs_bawah: float
-    cogs_atas: float
+    rasio_cogs: Optional[float]
+    cogs_bawah: Optional[float]
+    cogs_atas: Optional[float]
     biaya_antara: float
     output: float
     ntb_adj: float
@@ -73,7 +73,7 @@ class CleanedRecord:
     status_awal: str
     rasio_awal: Optional[float]
     prod_awal: float
-    cogs_awal: float
+    cogs_awal: Optional[float]
     ops_awal: float
     pend_awal: float
 

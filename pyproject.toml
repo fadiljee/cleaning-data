@@ -1,0 +1,11 @@
+[project]
+name = "cleaning-data"
+version = "1.0.0"
+description = "Sistem Otomasi Data Cleaning dan Validasi Nilai Tambah Bruto (NTB)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1.0",
+    "reportlab>=4.0.0",
+    "pandas>=2.0.0"
+]

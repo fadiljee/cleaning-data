@@ -46,73 +46,86 @@ Seluruh penyesuaian dilakukan secara deterministik dengan memenuhi tiga paramete
 
 ---
 
-## 3. Hasil Pembersihan Data per Petugas
+## 3. Struktur Berkas dan Arsitektur Clean Code
 
-### Petugas: Fadil Julianto
-* **Total Usaha:** 350 usaha (Kategori G).
-* **Status Berdasarkan Warna:** 100% Hijau (rentang 12.31% s.d. 47.97%).
-* **Status Rasio NTB:** 100% Hijau (DALAM RENTANG ACUAN, rentang 0.7200 s.d. 0.7246).
-* **Selisih NTB:** 0 baris minus (100% >= 0), total penambahan surplus NTB sebesar +Rp 179.000.000.
-* **Status Checklist:** 350 dari 350 usaha tercentang TRUE.
-
-### Petugas: Emilia Prananda
-* **Total Usaha:** 350 usaha (Kategori G, baris 1403 s.d. 1752).
-* **Status Berdasarkan Warna:** 100% Hijau (rentang 12.09% s.d. 47.74%).
-* **Status Rasio NTB:** 100% Hijau (DALAM RENTANG ACUAN, rentang 0.7200 s.d. 0.7202).
-* **Selisih NTB:** 0 baris minus (100% >= 0, nilai terendah Rp 0).
-* **Status Checklist:** 350 dari 350 usaha tercentang TRUE.
-
----
-
-## 4. Struktur Berkas Proyek
+Proyek diorganisasikan dengan arsitektur modular yang memisahkan konfigurasi, model data, logika bisnis pembersihan, modul ekspor Excel, dan modul pembuatan PDF:
 
 ```text
 cleaning-data/
-├── .gitignore                                 # Konfigurasi pengabaian berkas git
-├── README.md                                  # Dokumentasi teknis proyek
-├── generate_perfect_green_outputs.py          # Skrip pembersihan untuk Fadil Julianto
-├── generate_emilia_outputs.py                 # Skrip pembersihan untuk Emilia Prananda
-├── LK_Cleaning_Data_Fadil_Julianto.xlsx       # Lembar kerja hasil cleaning Fadil Julianto
-├── LK_Cleaning_Data_Emilia_Prananda.xlsx      # Lembar kerja hasil cleaning Emilia Prananda
-├── Laporan_Cleaning_Data_Fadil_Julianto.pdf   # Laporan evaluasi PDF Fadil Julianto
-└── Laporan_Cleaning_Data_Emilia_Prananda.pdf  # Laporan evaluasi PDF Emilia Prananda
+├── .gitignore                         # Konfigurasi pengabaian berkas git (*.xlsx, *.pdf, dll.)
+├── README.md                          # Dokumentasi teknis proyek
+├── pyproject.toml                     # Konfigurasi proyek dan metadata dependensi
+├── requirements.txt                   # Daftar pustaka Python yang dibutuhkan
+├── main.py                            # Antarmuka CLI utama untuk eksekusi pembersihan
+│
+├── src/                               # Modul kode sumber utama
+│   ├── __init__.py                    # Inisialisasi paket Python
+│   ├── config.py                      # Konstanta rasio acuan, toleransi, dan direktori
+│   ├── models.py                      # Data class untuk record mentah, hasil, dan ringkasan
+│   ├── cleaner.py                     # Mesin logika bisnis validasi dan penyesuaian data
+│   ├── excel_exporter.py              # Generator workbook Excel dengan 3 sheet dan conditional formatting
+│   └── pdf_reporter.py                # Generator laporan PDF evaluasi data
+│
+├── data/                              # Direktori penyimpanan data
+│   ├── input/                         # Tempat meletakkan berkas Excel mentah sumber
+│   └── output/                        # Tempat berkas hasil proses disimpan
+│
+└── tests/                             # Modul pengujian otomatis (Unit Testing)
+    ├── __init__.py
+    └── test_cleaner.py                # Pengujian validasi batasan bisnis
 ```
-
-### Struktur Lembar Kerja Excel (*Workbook*)
-Setiap berkas Excel hasil pembersihan terdiri atas tiga sheet:
-1. **LK - [Nama Petugas]:** 350 baris data lengkap dengan 34 kolom standar, rumus kalkulasi, format mata uang, serta penanda visual hijau pada kolom status warna dan status rasio.
-2. **Ringkasan Cleaning:** Ringkasan eksekutif, tabel metrik evaluasi utama, perbandingan status sebelum vs sesudah pembersihan, dan distribusi kode tindak lanjut.
-3. **Katalog Penyesuaian Detail:** Log komparasi nilai awal vs nilai penyesuaian baris per baris beserta catatan tindak lanjut.
 
 ---
 
-## 5. Prasyarat dan Cara Menjalankan
+## 4. Prasyarat dan Penggunaan
 
-### Prasyarat Sistem
+### Prasyarat
 * Python versi 3.10 atau yang lebih baru.
-* Pengelola paket `uv` atau `pip`.
+* Pengelola paket `pip` atau `uv`.
 
 ### Instalasi Dependensi
-Dependensi yang dibutuhkan adalah `openpyxl` untuk manipulasi spreadsheet dan `reportlab` untuk pembuatan dokumen PDF.
-
-Menggunakan pip:
 ```bash
-pip install openpyxl reportlab pandas
+pip install -r requirements.txt
+```
+Atau menggunakan `uv`:
+```bash
+uv sync
 ```
 
-Menggunakan uv:
+### Menjalankan Pengujian Otomatis (*Unit Tests*)
 ```bash
-uv pip install openpyxl reportlab pandas
+python -m unittest discover tests
 ```
 
-### Menjalankan Pembersihan Data
+### Penggunaan CLI (main.py)
 
-Untuk memproses data petugas Fadil Julianto:
-```bash
-python generate_perfect_green_outputs.py
-```
+1. **Melihat Seluruh Daftar Petugas pada Sheet LK:**
+   ```bash
+   python main.py --list-petugas
+   ```
 
-Untuk memproses data petugas Emilia Prananda:
-```bash
-python generate_emilia_outputs.py
-```
+2. **Membersihkan Data Petugas Tertentu (misal: Fadil Julianto):**
+   ```bash
+   python main.py --petugas "Fadil Julianto"
+   ```
+
+3. **Membersihkan Data Petugas Lain (misal: Emilia Prananda):**
+   ```bash
+   python main.py --petugas "Emilia Prananda"
+   ```
+
+4. **Menentukan Jalur Input dan Direktori Output Kustom:**
+   ```bash
+   python main.py --petugas "Fadil Julianto" --input "path/to/LK.xlsx" --output-dir "data/output"
+   ```
+
+---
+
+## 5. Ringkasan Evaluasi Data Terproses
+
+| Parameter Evaluasi | Target Acuan | Petugas Fadil Julianto | Petugas Emilia Prananda | Status Mutu |
+| :--- | :---: | :---: | :---: | :---: |
+| **Status Berdasarkan Warna** | 10% s.d. 50% | 12.31% s.d. 47.97% | 12.09% s.d. 47.74% | 100% HIJAU |
+| **Status Rasio NTB** | 0.64 s.d. 0.78 | 0.7200 s.d. 0.7246 | 0.7200 s.d. 0.7202 | 100% HIJAU |
+| **Selisih NTB Minus** | 0 Usaha | 0 Usaha (0%) | 0 Usaha (0%) | Bebas Minus |
+| **Checklist Selesai** | 100% | 350 / 350 (100%) | 350 / 350 (100%) | Lengkap |

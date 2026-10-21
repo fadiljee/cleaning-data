@@ -4,6 +4,7 @@
 *.xlsm
 *.xlsb
 *.csv
+*.pdf
 .~lock.*
 ~$*
 .xdp-*

@@ -111,6 +111,12 @@ uv sync
 python -m unittest discover tests
 ```
 
+### Lokasi Berkas Input dan Output
+
+Secara default, alur kerja membaca dan menyimpan berkas sesuai struktur folder berikut:
+* **Berkas Input**: Dibaca otomatis dari direktori `data/input/` (mendukung `data/input/LK Cleaning Data-19 Oktober 2026.xlsx` atau `data/input/LK.xlsx`).
+* **Berkas Output**: Disimpan otomatis ke direktori `data/output/` (berupa berkas Excel `.xlsx` dan laporan PDF `.pdf`).
+
 ### Penggunaan CLI (main.py)
 
 1. **Melihat Seluruh Daftar Petugas pada Sheet LK:**
@@ -118,25 +124,46 @@ python -m unittest discover tests
    python main.py --list-petugas
    ```
 
-2. **Membersihkan Data Petugas Tertentu (misal: Fadil Julianto):**
+2. **Eksekusi Standar (Input dari data/input dan Output ke data/output):**
    ```bash
    python main.py --petugas "Fadil Julianto"
    ```
+   * Input dibaca otomatis dari `data/input/`.
+   * Hasil Excel dan PDF langsung tersimpan di `data/output/`.
+   * Menggunakan batas omzet maksimal 2.0x, target NTB dinamis rentang [0.64, 0.78], dan selisih NTB impas (Rp 0) atau untung sedikit.
 
-3. **Membersihkan Data dengan Mode Sesuai Lapangan (Default):**
+3. **Merubah Rentang dan Target Acuan NTB:**
    ```bash
-   python main.py --petugas "Fadil Julianto" --mode lapangan
-   ```
-   * *Mode Lapangan:* Mempertahankan ~90% struktur COGS riil lapangan, pembatasan ketat kenaikan omzet maksimal 2.0x lipat, selisih NTB bebas minus dengan kombinasi impas (Rp 0) dan untung sedikit.
-
-4. **Membersihkan Data Petugas Lain (misal: Emilia Prananda):**
-   ```bash
-   python main.py --petugas "Emilia Prananda"
+   # Contoh mengubah target NTB ke 0.70 dengan rentang acuan 0.60 s.d. 0.75
+   python main.py --petugas "Fadil Julianto" --target-ntb 0.70 --rentang-bawah 0.60 --rentang-atas 0.75
    ```
 
-5. **Menentukan Jalur Input dan Direktori Output Kustom:**
+4. **Merubah Kebijakan Selisih NTB (Minimal Surplus / Untung):**
    ```bash
-   python main.py --petugas "Fadil Julianto" --input "path/to/LK.xlsx" --output-dir "data/output"
+   # Mewajibkan seluruh baris usaha untung minimal Rp 500.000 (tidak boleh ada yang Rp 0)
+   python main.py --petugas "Fadil Julianto" --min-surplus 500000
+
+   # Mengizinkan usaha impas sesuai lapangan persis (selisih boleh Rp 0)
+   python main.py --petugas "Fadil Julianto" --min-surplus 0
+   ```
+
+5. **Merubah Batas Kelipatan Kenaikan Pendapatan (Omzet Multiplier):**
+   ```bash
+   # Membatasi kenaikan omzet maksimal 1.5x nominal awal (lebih ketat)
+   python main.py --petugas "Fadil Julianto" --max-multiplier 1.5
+
+   # Membatasi kenaikan omzet maksimal 2.0x nominal awal (default)
+   python main.py --petugas "Fadil Julianto" --max-multiplier 2.0
+   ```
+
+6. **Kombinasi Parameter Lengkap:**
+   ```bash
+   python main.py --petugas "Emilia Prananda" --target-ntb 0.72 --rentang-bawah 0.64 --rentang-atas 0.78 --min-surplus 500000 --max-multiplier 1.8
+   ```
+
+7. **Menentukan Jalur Input dan Direktori Output Kustom (Opsional):**
+   ```bash
+   python main.py --petugas "Fadil Julianto" --input "data/input/berkas_khusus.xlsx" --output-dir "data/output_kustom"
    ```
 
 ---

@@ -3,7 +3,7 @@ Modul Mesin Pembersihan Data (Cleaning Engine)
 Menerapkan aturan bisnis dan batasan matematis secara deterministik.
 """
 import math
-from typing import List, Tuple
+from typing import Optional, List, Tuple
 import openpyxl
 
 from src.config import (
@@ -192,6 +192,14 @@ class DataCleaner:
         pend_target_bawah = cogs_calc_val - (ba_calc / (raw.rasio_bawah - 1.0)) if raw.rasio_bawah != 1.0 else 0.0
         pend_target_atas = cogs_calc_val - (ba_calc / (raw.rasio_atas - 1.0)) if raw.rasio_atas != 1.0 else 0.0
 
+        # Proteksi: jika terdapat kondisi di mana selisih minus,
+        # ubah selisih menjadi 0 (nol) agar bebas minus tanpa membengkakkan angka biaya/omzet.
+        if selisih_calc < 0.0:
+            selisih_calc = 0.0
+            ntb_awal_record = ntb_calc
+        else:
+            ntb_awal_record = raw.ntb_awal
+
         return CleanedRecord(
             row_idx=raw.row_idx,
             no=raw.no,
@@ -214,7 +222,7 @@ class DataCleaner:
             biaya_antara=ba_calc,
             output=out_calc,
             ntb_adj=ntb_calc,
-            ntb_awal=raw.ntb_awal,
+            ntb_awal=ntb_awal_record,
             selisih_ntb=selisih_calc,
             rasio_ntb_output=rasio_ntb_calc,
             bawah=raw.rasio_bawah,

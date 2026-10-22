@@ -15,7 +15,8 @@ from src.cleaner import DataCleaner
 from src.cleaner_lapangan import DataCleanerLapangan
 from src.excel_exporter import ExcelExporter
 from src.pdf_reporter import PDFReporter
-from src.config import BASE_DIR, DEFAULT_INPUT_FILE, INPUT_DIR, OUTPUT_DIR
+from src.models import CleaningSummary
+from src.config import BASE_DIR, DEFAULT_INPUT_FILE, INPUT_DIR, OUTPUT_DIR, MIN_COGS_MARGIN, MAX_COGS_MARGIN
 
 
 def find_input_file(custom_path: str = None) -> Path:
@@ -80,30 +81,19 @@ def list_available_petugas(workbook_path: Path):
     print(f"Total Petugas: {len(petugas_counts)}")
 
 
-def process_petugas(cleaner: DataCleaner, petugas_name: str, output_dir: Path):
-    """Menjalankan alur lengkap pembersihan dan pembuatan berkas untuk satu petugas"""
+def process_records_for_petugas(cleaner, petugas_name: str, raw_records: list, output_dir: Path):
+    """Membersihkan dan mengekspor data untuk sekumpulan data mentah seorang petugas"""
     clean_name = petugas_name.replace(" ", "_").replace(".", "").replace(",", "")
     safe_name = "".join(c for c in clean_name if c.isalnum() or c == "_")
 
-    print(f"\n[INFO] Membaca data untuk petugas: '{petugas_name}'...")
-    raw_records = cleaner.load_records_by_petugas(petugas_name)
-
-    if not raw_records:
-        print(f"[PERINGATAN] Tidak ditemukan data untuk petugas '{petugas_name}'.")
-        return
-
-    print(f"[INFO] Ditemukan {len(raw_records)} usaha. Menjalankan algoritma pembersihan data...")
     cleaned_records, summary = cleaner.clean_records(raw_records)
 
-    # Nama berkas output
     out_xlsx = output_dir / f"LK_Cleaning_Data_{safe_name}.xlsx"
     out_pdf = output_dir / f"Laporan_Cleaning_Data_{safe_name}.pdf"
 
-    print(f"[INFO] Membuat berkas Excel: {out_xlsx.name}...")
     exporter = ExcelExporter(str(out_xlsx))
     exporter.export(cleaned_records, summary)
 
-    print(f"[INFO] Membuat laporan PDF: {out_pdf.name}...")
     reporter = PDFReporter(str(out_pdf))
     reporter.generate(cleaned_records, summary)
 
@@ -113,16 +103,23 @@ def process_petugas(cleaner: DataCleaner, petugas_name: str, output_dir: Path):
     rasio_pct = (summary.total_rasio_hijau / summary.total_usaha) * 100 if summary.total_usaha > 0 else 0
     unique_ratios = len(set(round(c.rasio_ntb_output, 4) for c in cleaned_records))
 
-    print("\n=== HASIL EVALUASI AKHIR ===")
-    print(f"Petugas               : {summary.petugas}")
-    print(f"Total Usaha           : {summary.total_usaha}")
-    print(f"Status Warna Hijau    : {summary.total_warna_hijau}/{summary.total_usaha} ({warna_pct:.1f}% HIJAU, rentang {summary.min_cogs_ratio*100:.2f}% s.d. {summary.max_cogs_ratio*100:.2f}%)")
-    print(f"Status Rasio NTB      : {summary.total_rasio_hijau}/{summary.total_usaha} ({rasio_pct:.1f}% HIJAU DALAM ACUAN, {unique_ratios} variasi rasio unik)")
-    print(f"Selisih NTB >= 0      : {pos_count}/{summary.total_usaha} ({pos_pct:.1f}% untung sedikit/nol)")
-    if summary.total_selisih_minus > 0:
-        print(f"Penyesuaian Anomali   : {summary.total_selisih_minus} usaha (normalisasi output wajar dari anomali data mentah)")
-    print(f"Berkas Excel          : {out_xlsx.resolve()}")
-    print(f"Berkas PDF            : {out_pdf.resolve()}")
+    print(f"  -> Usaha: {summary.total_usaha} | Warna Hijau: {warna_pct:.1f}% | Rasio NTB: {rasio_pct:.1f}% | Selisih >= 0: {pos_pct:.1f}% ({unique_ratios} rasio unik)")
+    print(f"  -> Excel: {out_xlsx.name}")
+    print(f"  -> PDF  : {out_pdf.name}")
+    return summary
+
+
+def process_petugas(cleaner: DataCleaner, petugas_name: str, output_dir: Path):
+    """Menjalankan alur lengkap pembersihan dan pembuatan berkas untuk satu petugas spesifik"""
+    print(f"\n[INFO] Membaca data untuk petugas: '{petugas_name}'...")
+    raw_records = cleaner.load_records_by_petugas(petugas_name)
+
+    if not raw_records:
+        print(f"[PERINGATAN] Tidak ditemukan data untuk petugas '{petugas_name}'.")
+        return None
+
+    print(f"[INFO] Ditemukan {len(raw_records)} usaha. Menjalankan algoritma pembersihan data...")
+    return process_records_for_petugas(cleaner, petugas_name, raw_records, output_dir)
 
 
 def main():
@@ -138,6 +135,24 @@ def main():
         "--list-petugas",
         action="store_true",
         help="Menampilkan seluruh daftar nama petugas yang ada di file Excel"
+    )
+    parser.add_argument(
+        "--all", "--all-petugas",
+        dest="all_petugas",
+        action="store_true",
+        help="Proses seluruh petugas (semua 27 petugas) sekaligus dalam satu kali eksekusi"
+    )
+    parser.add_argument(
+        "--output-file",
+        type=str,
+        default="LK_Cleaning_Data_Gabungan.xlsx",
+        help="Nama berkas Excel hasil gabungan seluruh petugas dalam 1 sheet (default: LK_Cleaning_Data_Gabungan.xlsx)"
+    )
+    parser.add_argument(
+        "--split", "--split-petugas",
+        dest="split_petugas",
+        action="store_true",
+        help="Selain berkas gabungan, juga buat berkas Excel dan PDF terpisah untuk masing-masing petugas"
     )
     parser.add_argument(
         "--input",
@@ -200,12 +215,6 @@ def main():
         list_available_petugas(input_file)
         sys.exit(0)
 
-    if not args.petugas:
-        print("[INFO] Parameter --petugas tidak diberikan. Menjalankan default: 'Fadil Julianto'")
-        petugas_target = "Fadil Julianto"
-    else:
-        petugas_target = args.petugas
-
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -227,7 +236,80 @@ def main():
         print("[INFO] Menggunakan Mode 'Standard'")
         cleaner = DataCleaner(str(input_file))
 
-    process_petugas(cleaner, petugas_target, output_dir)
+    if args.all_petugas:
+        print("\n[INFO] Opsi --all diaktifkan: Membaca seluruh data sheet LK sekaligus...")
+        all_grouped = cleaner.load_all_records_grouped()
+        total_petugas = len(all_grouped)
+        total_usaha_semua = sum(len(v) for v in all_grouped.values())
+        print(f"[INFO] Ditemukan {total_petugas} petugas dengan total {total_usaha_semua} unit usaha.")
+
+        all_cleaned_records = []
+        summaries = []
+
+        for idx, (petugas, raw_records) in enumerate(sorted(all_grouped.items(), key=lambda x: x[0]), start=1):
+            cleaned, summary = cleaner.clean_records(raw_records)
+            summaries.append(summary)
+            all_cleaned_records.extend(cleaned)
+
+            if args.split_petugas:
+                print(f"  [{idx}/{total_petugas}] Mengekspor berkas perorangan: '{petugas}'...")
+                process_records_for_petugas(cleaner, petugas, raw_records, output_dir)
+
+        # Urutkan seluruh baris data gabungan berdasarkan nomor baris asli dari sheet LK
+        all_cleaned_records.sort(key=lambda c: c.row_idx)
+
+        # Buat Ringkasan Eksekutif Terpadu
+        cogs_ratios = [c.rasio_cogs for c in all_cleaned_records if c.rasio_cogs is not None]
+        combined_summary = CleaningSummary(
+            petugas=f"Semua Petugas ({total_petugas} Petugas)",
+            total_usaha=len(all_cleaned_records),
+            total_selesai=sum(1 for c in all_cleaned_records if c.sudah_diperbaiki),
+            total_warna_hijau=sum(1 for c in all_cleaned_records if c.rasio_cogs is None or MIN_COGS_MARGIN <= c.rasio_cogs <= MAX_COGS_MARGIN),
+            total_rasio_hijau=sum(1 for c in all_cleaned_records if c.status_rasio == "DALAM RENTANG ACUAN"),
+            total_selisih_minus=sum(1 for c in all_cleaned_records if c.selisih_ntb < -0.01),
+            total_ntb_awal=sum(c.ntb_awal for c in all_cleaned_records),
+            total_ntb_adj=sum(c.ntb_adj for c in all_cleaned_records),
+            total_selisih_ntb=sum(c.selisih_ntb for c in all_cleaned_records),
+            min_cogs_ratio=min(cogs_ratios, default=0.0),
+            max_cogs_ratio=max(cogs_ratios, default=0.0),
+            min_ntb_ratio=min((c.rasio_ntb_output for c in all_cleaned_records), default=0.0),
+            max_ntb_ratio=max((c.rasio_ntb_output for c in all_cleaned_records), default=0.0),
+        )
+
+        out_xlsx = output_dir / args.output_file
+        pdf_name = args.output_file.replace(".xlsx", ".pdf") if args.output_file.endswith(".xlsx") else f"{args.output_file}.pdf"
+        out_pdf = output_dir / f"Laporan_{pdf_name}"
+
+        print(f"\n[INFO] Menyimpan seluruh data {total_petugas} petugas ke dalam 1 sheet ('LK') pada berkas gabungan:")
+        print(f"  -> Excel Gabungan : {out_xlsx.resolve()}")
+        exporter = ExcelExporter(str(out_xlsx))
+        exporter.export(all_cleaned_records, combined_summary, sheet_name="LK", petugas_summaries=summaries)
+
+        print(f"  -> PDF Rekapitulasi: {out_pdf.resolve()}")
+        reporter = PDFReporter(str(out_pdf))
+        reporter.generate(all_cleaned_records, combined_summary)
+
+        print("\n" + "=" * 80)
+        print("=== REKAPITULASI PROSES SELURUH PETUGAS ===")
+        print("=" * 80)
+        print(f"{'No':<3} | {'Nama Petugas':<40} | {'Usaha':<6} | {'Warna Hijau':<11} | {'Rasio Hijau':<11} | {'Bebas Minus'}")
+        print("-" * 80)
+        for i, s in enumerate(summaries, start=1):
+            w_pct = (s.total_warna_hijau / s.total_usaha) * 100 if s.total_usaha > 0 else 0
+            r_pct = (s.total_rasio_hijau / s.total_usaha) * 100 if s.total_usaha > 0 else 0
+            minus_txt = "0 Minus (OK)" if s.total_selisih_minus == 0 else f"{s.total_selisih_minus} Minus"
+            print(f"{i:<3} | {s.petugas:<40} | {s.total_usaha:<6} | {w_pct:>5.1f}%       | {r_pct:>5.1f}%       | {minus_txt}")
+        print("-" * 80)
+        print(f"Total Usaha Selesai Diproses: {total_usaha_semua} usaha untuk {total_petugas} petugas.")
+        print(f"Seluruh 27 petugas tergabung dalam 1 sheet ('LK') pada: {out_xlsx.name}")
+        print(f"Seluruh berkas Excel dan PDF tersimpan di: {output_dir.resolve()}")
+    else:
+        if not args.petugas:
+            print("[INFO] Parameter --petugas tidak diberikan. Menjalankan default: 'Fadil Julianto'")
+            petugas_target = "Fadil Julianto"
+        else:
+            petugas_target = args.petugas
+        process_petugas(cleaner, petugas_target, output_dir)
 
 
 if __name__ == "__main__":

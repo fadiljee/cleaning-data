@@ -29,6 +29,72 @@ from src.config import (
 from src.models import RawRecord, CleanedRecord, CleaningSummary
 
 
+def safe_float(val, default: float = 0.0) -> float:
+    """Konversi nilai cell Excel ke float dengan aman, menangani #DIV/0!, #VALUE!, None, string kosong."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s or s.startswith("#") or s.lower() in ("none", "null", "-", "nan"):
+        return default
+    try:
+        return float(s.replace(",", ""))
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_float_or_none(val) -> Optional[float]:
+    """Konversi nilai cell Excel ke float atau None jika kosong / error formula Excel."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s or s.startswith("#") or s.lower() in ("none", "null", "-", "nan"):
+        return None
+    try:
+        return float(s.replace(",", ""))
+    except (ValueError, TypeError):
+        return None
+
+
+def is_pure_service(nama: str) -> bool:
+    """Mengecek apakah usaha adalah jasa murni/sosial yang tidak menjual barang dagangan (tanpa COGS)."""
+    n = (nama or "").lower()
+    keywords = [
+        "pangkas", "potong rambut", "salon", "laundry", "urut", "pijat",
+        "dokter", "bidan", "klinik", "tpa", "sekolah", "yayasan", "pesantren",
+        "bimbingan", "bimbel", "les", "jahit", "vermak", "tambal ban", "cuci motor", "cuci mobil"
+    ]
+    return any(kw in n for kw in keywords)
+
+
+def is_trade_with_cogs(nama: str, kategori: str, cogs0_f: Optional[float], pend_utama: float) -> bool:
+    """Mengecek apakah usaha merupakan sektor perdagangan yang menggunakan formula COGS."""
+    if cogs0_f is not None and cogs0_f > 0.0:
+        return True
+    if kategori and str(kategori).strip().upper() not in ("G", "NONE", ""):
+        return False
+    if is_pure_service(nama):
+        return False
+    n = (nama or "").lower()
+    retail_keywords = [
+        "toko", "sembako", "kelontong", "warung", "mart", "kios", "grosir",
+        "distributor", "lapak", "pengecer", "jual", "top up", "wallet", "pulsa", "cell", "counter", "loket"
+    ]
+    if any(rk in n for rk in retail_keywords):
+        return True
+    return False
+
+
+def is_service_or_non_trade(
+    nama: str, cogs: Optional[float], prod: float, ops: float, ntb_awal: float, pend_utama: float
+) -> bool:
+    """Mendeteksi apakah usaha adalah sektor jasa/keuangan/ekstraksi/sosial yang salah KBLI dan tanpa COGS"""
+    return not is_trade_with_cogs(nama, "G", cogs, pend_utama)
+
+
 def can_have_production_cost(nama: str) -> bool:
     """
     Mengecek apakah jenis usaha secara wajar dapat memiliki biaya produksi/kemasan/penyiapan barang.
@@ -154,6 +220,48 @@ def _clean_with_lapangan_mode(
     is_prod = is_production_business(nama)
     target_r = get_row_target_ratio(raw.row_idx, nama, target_ntb_ratio, min_ntb_ratio, max_ntb_ratio)
 
+    # -- KASUS KHUSUS 0: Data mentah dengan omzet/pendapatan kosong atau 0 --
+    if p0 <= 0:
+        if ntb0 > 0:
+            cand_ntb = ntb0
+            cand_out = round((cand_ntb / target_r) / ROUNDING_BASE) * ROUNDING_BASE
+            cand_ba = cand_out - cand_ntb
+            cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
+
+            is_service = any(k in nama_lower for k in [
+                "tpa", "sekolah", "yayasan", "pesantren", "bimbingan", "laundry", "salon",
+                "pangkas", "bengkel", "servis", "service", "jahit", "fotocopy"
+            ])
+
+            if is_service:
+                cand_p = cand_out
+                cand_cogs = None
+                r_cogs = None
+            else:
+                cand_p = round((cand_out / 0.28) / 100000) * 100000
+                cand_cogs = cand_p - cand_out
+                r_cogs = cand_out / cand_p
+
+            r_ntb = cand_ntb / cand_out if cand_out > 0 else target_r
+            selisih = 0.0
+            tindak = REMARK_CONCEPT_FIX
+            catatan = "Rekonstruksi omzet, COGS, dan biaya dari NTB awal survei (data omzet survei awal kosong)"
+
+            return _build_record(
+                raw, cand_p, cand_cogs, cand_prod, cand_ops, cand_out, cand_ntb,
+                ntb0, selisih, r_ntb, r_cogs,
+                cand_p * 0.90 if cand_cogs is not None else None,
+                cand_p * 0.50 if cand_cogs is not None else None,
+                tindak, catatan
+            )
+        else:
+            return _build_record(
+                raw, 0.0, None, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, target_r, None,
+                None, None,
+                REMARK_NO_CHANGE, "Usaha nihil / tidak ada data keuangan"
+            )
+
     # -- KONDISI 1: Data lapangan asli SUDAH HIJAU dan selisih >= min_surplus --
     if cogs0_f is not None and p0 > 0:
         raw_out = p0 - cogs0_f
@@ -174,21 +282,48 @@ def _clean_with_lapangan_mode(
                 REMARK_NO_CHANGE, "Data lapangan sudah sesuai acuan (tidak ada perubahan)"
             )
 
-    # -- KONDISI 2: Usaha jasa murni tanpa COGS (misal Usaha Galon) yang sudah hijau --
-    if (cogs0_f is None or cogs0_f == 0.0) and p0 > 0 and "DALAM RENTANG" in raw.status_awal:
+    # -- KONDISI 2: Usaha jasa / non-dagang murni tanpa COGS --
+    if not is_trade_with_cogs(nama, raw.kategori, cogs0_f, p0) and p0 > 0:
         raw_out = p0
         raw_ba = prod0 + ops0
         raw_ntb = raw_out - raw_ba
         raw_rntb = raw_ntb / raw_out if raw_out > 0 else 0.0
-        # Kecualikan usaha yang sebetulnya ritel/agen (wallet, pulsa, cell, online)
-        is_agent_trade = any(k in nama_lower for k in ["wallet", "top up", "pulsa", "cell", "online"])
-        if not is_agent_trade and min_ntb_ratio <= raw_rntb <= max_ntb_ratio and (raw_ntb - ntb0) >= min_surplus:
+
+        if min_ntb_ratio <= raw_rntb <= max_ntb_ratio and (raw_ntb - ntb0) >= min_surplus:
             return _build_record(
                 raw, p0, None, prod0, ops0, raw_out, raw_ntb,
                 ntb0, raw_ntb - ntb0, raw_rntb, None,
                 None, None,
                 REMARK_NO_CHANGE, "Data lapangan sudah sesuai acuan (usaha jasa/tanpa COGS)"
             )
+
+        # Sesuaikan target NTB dan output
+        needed_out = round((ntb0 / target_r) / ROUNDING_BASE) * ROUNDING_BASE
+        if ntb0 > 0 and needed_out <= p0 * max_multiplier:
+            cand_p = needed_out
+            cand_out = needed_out
+            cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
+            selisih = cand_ntb - ntb0
+        else:
+            cand_p = p0
+            cand_out = p0
+            cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
+            selisih = 0.0
+
+        cand_ba = max(cand_out - cand_ntb, 0.0)
+        cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
+        r_ntb = cand_ntb / cand_out if cand_out > 0 else target_r
+        tindak = REMARK_CONCEPT_FIX
+        catatan = "Penyesuaian biaya usaha jasa/non-dagang tanpa COGS sesuai rentang acuan"
+
+        ntb_awal_record = cand_ntb if (selisih == 0.0 and (cand_ntb - ntb0) < 0) else ntb0
+
+        return _build_record(
+            raw, cand_p, None, cand_prod, cand_ops, cand_out, cand_ntb,
+            ntb_awal_record, max(selisih, 0.0), r_ntb, None,
+            None, None,
+            tindak, catatan
+        )
 
     # -- KONDISI 3: Optimasi Cerdas Kontekstual & Minimal Surplus --
     # Surplus deterministik kecil: 0 s.d. 300rb Rupiah
@@ -204,7 +339,12 @@ def _clean_with_lapangan_mode(
         p_multipliers = [1.0]
 
     for p_mult in p_multipliers:
-        cand_p = round((p0 * p_mult) / 100000) * 100000
+        if p0 < 100000:
+            cand_p = max(p0, 10000.0)
+        else:
+            cand_p = round((p0 * p_mult) / 100000) * 100000
+            if cand_p <= 0:
+                cand_p = p0
 
         # Cari persentase margin Output/Pendapatan antara 12% s.d. 48% (rentang normal perdagangan)
         for m_int in range(12, 49):
@@ -218,8 +358,8 @@ def _clean_with_lapangan_mode(
             # Alokasi biaya secara kontekstual sesuai jenis usaha (mempertahankan data biaya lapangan)
             cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
-            r_cogs = cand_out / cand_p
-            r_ntb = cand_ntb / cand_out if cand_out > 0 else 0.0
+            r_cogs = (cand_out / cand_p) if cand_p > 0 else 0.0
+            r_ntb = (cand_ntb / cand_out) if cand_out > 0 else 0.0
 
             if (MIN_COGS_MARGIN <= r_cogs <= MAX_COGS_MARGIN and
                     min_ntb_ratio <= r_ntb <= max_ntb_ratio and
@@ -246,7 +386,12 @@ def _clean_with_lapangan_mode(
     # Jika belum ada solusi dengan target_surplus, coba sekali lagi dengan selisih >= 0
     if best_solution is None and target_surplus > 0:
         for p_mult in p_multipliers:
-            cand_p = round((p0 * p_mult) / 100000) * 100000
+            if p0 < 100000:
+                cand_p = max(p0, 10000.0)
+            else:
+                cand_p = round((p0 * p_mult) / 100000) * 100000
+                if cand_p <= 0:
+                    cand_p = p0
             for m_int in range(12, 49):
                 m = m_int / 100.0
                 cand_out = round((cand_p * m) / ROUNDING_BASE) * ROUNDING_BASE
@@ -257,8 +402,8 @@ def _clean_with_lapangan_mode(
 
                 cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
-                r_cogs = cand_out / cand_p
-                r_ntb = cand_ntb / cand_out if cand_out > 0 else 0.0
+                r_cogs = (cand_out / cand_p) if cand_p > 0 else 0.0
+                r_ntb = (cand_ntb / cand_out) if cand_out > 0 else 0.0
 
                 if (MIN_COGS_MARGIN <= r_cogs <= MAX_COGS_MARGIN and
                         min_ntb_ratio <= r_ntb <= max_ntb_ratio and
@@ -283,15 +428,19 @@ def _clean_with_lapangan_mode(
         cand_p = p0
         m = 0.28
         cand_out = round((cand_p * m) / ROUNDING_BASE) * ROUNDING_BASE
-        cand_cogs = cand_p - cand_out
+        if cand_out <= 0:
+            cand_out = max(round(cand_p * m), 1.0)
+        cand_cogs = max(cand_p - cand_out, 0.0)
         cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
-        cand_ba = cand_out - cand_ntb
+        if cand_ntb <= 0:
+            cand_ntb = max(round(cand_out * target_r), 1.0)
+        cand_ba = max(cand_out - cand_ntb, 0.0)
         cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
         # Selisih diset 0.0 agar tidak minus dan tidak memaksakan pembengkakan biaya
         selisih = 0.0
-        r_cogs = cand_out / cand_p
-        r_ntb = cand_ntb / cand_out
+        r_cogs = (cand_out / cand_p) if cand_p > 0 else None
+        r_ntb = (cand_ntb / cand_out) if cand_out > 0 else target_r
         tindak = REMARK_OTHER_METHOD
         catatan = "Normalisasi output & biaya wajar sesuai sektor usaha (selisih disesuaikan Rp 0 karena koreksi COGS survei awal)"
         best_solution = (
@@ -415,6 +564,51 @@ class DataCleanerLapangan:
         self.max_multiplier = max_multiplier
         self.min_surplus = min_surplus
 
+    def load_all_records_grouped(self, sheet_name: str = "LK") -> dict:
+        """Mengekstrak seluruh data mentah dan mengelompokkannya per nama petugas dalam satu kali pembacaan."""
+        wb = openpyxl.load_workbook(self.workbook_path, data_only=True)
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"Sheet '{sheet_name}' tidak ditemukan.")
+
+        sheet = wb[sheet_name]
+        grouped = {}
+        for r_idx, row in enumerate(sheet.iter_rows(min_row=3, values_only=True), start=3):
+            petugas = row[30]
+            if not petugas:
+                continue
+            petugas_str = str(petugas).strip()
+            raw_cogs = row[7]
+            cogs_val = safe_float_or_none(raw_cogs)
+            record = RawRecord(
+                row_idx=r_idx,
+                no=row[0],
+                link=row[1],
+                link_edit=row[2] or (f"{row[1]}/edit" if row[1] else None),
+                nama_usaha=str(row[3] or ""),
+                kategori=str(row[4] or "G"),
+                gaji=safe_float(row[5], 0.0),
+                biaya_produksi=safe_float(row[6], 0.0),
+                cogs=cogs_val,
+                biaya_operasional=safe_float(row[8], 0.0),
+                biaya_non_operasional=safe_float(row[9], 0.0),
+                pendapatan_utama=safe_float(row[10], 0.0),
+                pendapatan_lain=safe_float_or_none(row[11]),
+                ntb_awal=safe_float(row[20], 0.0),
+                rasio_bawah=safe_float(row[23], self.min_ntb_ratio),
+                rasio_atas=safe_float(row[24], self.max_ntb_ratio),
+                status_awal=str(row[25] or ""),
+                petugas=petugas_str,
+                sudah_diperbaiki=bool(row[31]),
+                tindak_lanjut=row[32],
+                catatan=row[33],
+                rasio_awal=safe_float_or_none(row[22]),
+            )
+            if petugas_str not in grouped:
+                grouped[petugas_str] = []
+            grouped[petugas_str].append(record)
+
+        return grouped
+
     def load_records_by_petugas(self, petugas_name: str, sheet_name: str = "LK") -> List[RawRecord]:
         """Mengekstrak data mentah berdasarkan nama petugas."""
         wb = openpyxl.load_workbook(self.workbook_path, data_only=True)
@@ -427,24 +621,24 @@ class DataCleanerLapangan:
             petugas = row[30]
             if petugas and petugas_name.lower() in str(petugas).lower():
                 raw_cogs = row[7]
-                cogs_val = float(raw_cogs) if raw_cogs is not None and str(raw_cogs).strip() not in ("", "None") else None
+                cogs_val = safe_float_or_none(raw_cogs)
                 records.append(RawRecord(
                     row_idx=r_idx, no=row[0], link=row[1],
                     link_edit=row[2] or f"{row[1]}/edit",
                     nama_usaha=str(row[3] or ""), kategori=str(row[4] or "G"),
-                    gaji=float(row[5] or 0.0), biaya_produksi=float(row[6] or 0.0),
-                    cogs=cogs_val, biaya_operasional=float(row[8] or 0.0),
-                    biaya_non_operasional=float(row[9] or 0.0),
-                    pendapatan_utama=float(row[10] or 0.0),
-                    pendapatan_lain=float(row[11]) if row[11] is not None else None,
-                    ntb_awal=float(row[20] or 0.0),
-                    rasio_bawah=float(row[23] or self.min_ntb_ratio),
-                    rasio_atas=float(row[24] or self.max_ntb_ratio),
+                    gaji=safe_float(row[5], 0.0), biaya_produksi=safe_float(row[6], 0.0),
+                    cogs=cogs_val, biaya_operasional=safe_float(row[8], 0.0),
+                    biaya_non_operasional=safe_float(row[9], 0.0),
+                    pendapatan_utama=safe_float(row[10], 0.0),
+                    pendapatan_lain=safe_float_or_none(row[11]),
+                    ntb_awal=safe_float(row[20], 0.0),
+                    rasio_bawah=safe_float(row[23], self.min_ntb_ratio),
+                    rasio_atas=safe_float(row[24], self.max_ntb_ratio),
                     status_awal=str(row[25] or ""),
                     petugas=str(petugas),
                     sudah_diperbaiki=bool(row[31]),
                     tindak_lanjut=row[32], catatan=row[33],
-                    rasio_awal=float(row[22]) if row[22] is not None else None,
+                    rasio_awal=safe_float_or_none(row[22]),
                 ))
         return records
 

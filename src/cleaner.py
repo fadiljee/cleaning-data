@@ -24,7 +24,7 @@ from src.config import (
     REMARK_OTHER_METHOD
 )
 from src.models import RawRecord, CleanedRecord, CleaningSummary
-from src.cleaner_lapangan import can_have_production_cost, allocate_intermediate_costs
+from src.cleaner_lapangan import can_have_production_cost, allocate_intermediate_costs, safe_float, safe_float_or_none
 
 
 def is_service_or_non_trade(
@@ -57,6 +57,51 @@ class DataCleaner:
     def __init__(self, workbook_path: str):
         self.workbook_path = workbook_path
 
+    def load_all_records_grouped(self, sheet_name: str = "LK") -> dict:
+        """Mengekstrak seluruh data mentah dan mengelompokkannya per nama petugas dalam satu kali pembacaan"""
+        wb = openpyxl.load_workbook(self.workbook_path, data_only=True)
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"Sheet '{sheet_name}' tidak ditemukan dalam workbook.")
+
+        sheet = wb[sheet_name]
+        grouped = {}
+        for r_idx, row in enumerate(sheet.iter_rows(min_row=3, values_only=True), start=3):
+            petugas = row[30]
+            if not petugas:
+                continue
+            petugas_str = str(petugas).strip()
+            raw_cogs = row[7]
+            cogs_val = safe_float_or_none(raw_cogs)
+            record = RawRecord(
+                row_idx=r_idx,
+                no=row[0],
+                link=row[1],
+                link_edit=row[2] or (f"{row[1]}/edit" if row[1] else None),
+                nama_usaha=str(row[3] or ""),
+                kategori=str(row[4] or "G"),
+                gaji=safe_float(row[5], 0.0),
+                biaya_produksi=safe_float(row[6], 0.0),
+                cogs=cogs_val,
+                biaya_operasional=safe_float(row[8], 0.0),
+                biaya_non_operasional=safe_float(row[9], 0.0),
+                pendapatan_utama=safe_float(row[10], 0.0),
+                pendapatan_lain=safe_float_or_none(row[11]),
+                ntb_awal=safe_float(row[20], 0.0),
+                rasio_bawah=safe_float(row[23], MIN_NTB_RATIO),
+                rasio_atas=safe_float(row[24], MAX_NTB_RATIO),
+                status_awal=str(row[25] or ""),
+                petugas=petugas_str,
+                sudah_diperbaiki=bool(row[31]),
+                tindak_lanjut=row[32],
+                catatan=row[33],
+                rasio_awal=safe_float_or_none(row[22]),
+            )
+            if petugas_str not in grouped:
+                grouped[petugas_str] = []
+            grouped[petugas_str].append(record)
+
+        return grouped
+
     def load_records_by_petugas(self, petugas_name: str, sheet_name: str = "LK") -> List[RawRecord]:
         """Mengekstrak baris data mentah dari workbook berdasarkan nama petugas"""
         wb = openpyxl.load_workbook(self.workbook_path, data_only=True)
@@ -71,7 +116,7 @@ class DataCleaner:
             petugas = row[30]
             if petugas and petugas_name.lower() in str(petugas).lower():
                 raw_cogs = row[7]
-                cogs_val = float(raw_cogs) if raw_cogs is not None and str(raw_cogs).strip() != "" else None
+                cogs_val = safe_float_or_none(raw_cogs)
                 record = RawRecord(
                     row_idx=r_idx,
                     no=row[0],
@@ -79,22 +124,22 @@ class DataCleaner:
                     link_edit=row[2] or f"{row[1]}/edit",
                     nama_usaha=str(row[3] or ""),
                     kategori=str(row[4] or "G"),
-                    gaji=float(row[5] or 0.0),
-                    biaya_produksi=float(row[6] or 0.0),
+                    gaji=safe_float(row[5], 0.0),
+                    biaya_produksi=safe_float(row[6], 0.0),
                     cogs=cogs_val,
-                    biaya_operasional=float(row[8] or 0.0),
-                    biaya_non_operasional=float(row[9] or 0.0),
-                    pendapatan_utama=float(row[10] or 0.0),
-                    pendapatan_lain=float(row[11]) if row[11] is not None else None,
-                    ntb_awal=float(row[20] or 0.0),
-                    rasio_bawah=float(row[23] or MIN_NTB_RATIO),
-                    rasio_atas=float(row[24] or MAX_NTB_RATIO),
+                    biaya_operasional=safe_float(row[8], 0.0),
+                    biaya_non_operasional=safe_float(row[9], 0.0),
+                    pendapatan_utama=safe_float(row[10], 0.0),
+                    pendapatan_lain=safe_float_or_none(row[11]),
+                    ntb_awal=safe_float(row[20], 0.0),
+                    rasio_bawah=safe_float(row[23], MIN_NTB_RATIO),
+                    rasio_atas=safe_float(row[24], MAX_NTB_RATIO),
                     status_awal=str(row[25] or ""),
                     petugas=str(petugas),
                     sudah_diperbaiki=bool(row[31]),
                     tindak_lanjut=row[32],
                     catatan=row[33],
-                    rasio_awal=float(row[22]) if row[22] is not None else None
+                    rasio_awal=safe_float_or_none(row[22])
                 )
                 records.append(record)
 
@@ -105,6 +150,34 @@ class DataCleaner:
         non_trade = is_service_or_non_trade(
             raw.nama_usaha, raw.cogs, raw.biaya_produksi, raw.biaya_operasional, raw.ntb_awal, raw.pendapatan_utama
         )
+
+        if raw.pendapatan_utama <= 0:
+            if raw.ntb_awal > 0:
+                out_calc = round((raw.ntb_awal / TARGET_NTB_RATIO) / ROUNDING_BASE) * ROUNDING_BASE
+                ba_calc = out_calc - raw.ntb_awal
+                prod_calc, ops_calc = allocate_intermediate_costs(raw.nama_usaha, ba_calc, raw.biaya_produksi, raw.biaya_operasional)
+                if non_trade:
+                    new_pend = out_calc
+                    new_cogs = None
+                    rasio_cogs = None
+                else:
+                    new_pend = round((out_calc / TARGET_COGS_MARGIN) / 100000) * 100000
+                    new_cogs = new_pend - out_calc
+                    rasio_cogs = out_calc / new_pend
+                rasio_ntb = raw.ntb_awal / out_calc
+                return CleanedRecord(
+                    row_idx=raw.row_idx, no=raw.no, link=raw.link, link_edit=raw.link_edit,
+                    nama_usaha=raw.nama_usaha, kategori=raw.kategori, gaji=raw.gaji,
+                    biaya_produksi=prod_calc, cogs=new_cogs, biaya_operasional=ops_calc,
+                    biaya_non_operasional=raw.biaya_non_operasional, pendapatan_utama=new_pend,
+                    pendapatan_lain=raw.pendapatan_lain, output=out_calc, ntb=raw.ntb_awal,
+                    ntb_awal=raw.ntb_awal, selisih_ntb=0.0, rasio_ntb_output=rasio_ntb,
+                    rasio_cogs=rasio_cogs, cogs_batas_bawah=new_pend * 0.90 if new_cogs is not None else None,
+                    cogs_batas_atas=new_pend * 0.50 if new_cogs is not None else None,
+                    status_ntb="DALAM RENTANG ACUAN",
+                    sudah_diperbaiki=True, tindak_lanjut=REMARK_CONCEPT_FIX,
+                    catatan="Rekonstruksi omzet, COGS, dan biaya dari NTB awal survei (data omzet mentah kosong)"
+                )
 
         # Untung sedikit: minimal Rp 500.000 s.d. 2% dari NTB awal
         delta = max(500000.0, round((max(raw.ntb_awal, 1000000.0) * 0.02) / 50000) * 50000)

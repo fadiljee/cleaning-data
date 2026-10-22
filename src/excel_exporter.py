@@ -18,8 +18,14 @@ class ExcelExporter:
     def __init__(self, filename: str):
         self.filename = filename
 
-    def export(self, cleaned_records: List[CleanedRecord], summary: CleaningSummary):
-        """Membuat berkas Excel lengkap dengan 3 lembar kerja"""
+    def export(
+        self,
+        cleaned_records: List[CleanedRecord],
+        summary: CleaningSummary,
+        sheet_name: str = None,
+        petugas_summaries: List[CleaningSummary] = None,
+    ):
+        """Membuat berkas Excel lengkap dengan lembar kerja terstruktur"""
         wb = openpyxl.Workbook()
         wb.remove(wb.active)  # Hapus sheet default
 
@@ -43,17 +49,22 @@ class ExcelExporter:
         border_header = Border(left=thin_border, right=thin_border, top=thin_border, bottom=Side(style="medium", color="1F4E79"))
 
         # ==================== SHEET 1: LK ====================
-        sheet_title = f"LK - {summary.petugas.split(',')[0].strip()}"[:31]
+        if sheet_name:
+            sheet_title = sheet_name[:31]
+        elif "Semua Petugas" in summary.petugas or "gabungan" in summary.petugas.lower():
+            sheet_title = "LK"
+        else:
+            sheet_title = f"LK - {summary.petugas.split(',')[0].strip()}"[:31]
         ws_lk = wb.create_sheet(title=sheet_title)
         ws_lk.views.sheetView[0].showGridLines = True
 
         header_row1 = [
-            "", "", "", "26a", "26b", "26c", "26d", "26e", "27a", "27b",
-            "(27a+27b)-(26a+26b+26c+26d+26e)", "k/12", "Status Berdasarkan warna", "0.1", "0.5",
-            "", "=I-F", "=Q-P", "", "", "", "Rasio NTB", "", "", "Biaya Antara", "", "Pendapatan", "", "", "", "", ""
+            "", "", "", "", "26a", "26b", "26c", "26d", "26e", "27a", "27b",
+            "(27a+27b)-(26a+26b+26c+26d+26e)", "l/12", "Status Berdasarkan warna", "0.1", "0.5",
+            "", "=J-G", "=R-Q", "", "", "", "Rasio NTB", "", "", "Biaya Antara", "", "Pendapatan", "", "", "", "", ""
         ]
         header_row2 = [
-            "No", "Nama Usaha", "Kategori", "Gaji", "Biaya Produksi", "COGS", "Biaya Operasional",
+            "No", "Link Edit", "Nama Usaha", "Kategori", "Gaji", "Biaya Produksi", "COGS", "Biaya Operasional",
             "Biaya non Operasional", "Pendapatan Utama", "Pendapatan Lain", "Pendapatan Per Tahun", "Pendapatan Per Bulan",
             "Rasio COGS", "COGS Bawah", "COGS Atas", "Biaya Antara", "Output", "NTB Adj", "NTB Awal", "Selisih NTB",
             "Rasio NTB/Output", "Bawah", "Atas", "Status Rasio", "BA Bawah", "BA Atas", "Pend Bawah", "Pend Atas",
@@ -77,7 +88,7 @@ class ExcelExporter:
 
         for row_num, d in enumerate(cleaned_records, start=3):
             row_vals = [
-                d.no, d.nama_usaha, d.kategori,
+                d.no, d.link_edit, d.nama_usaha, d.kategori,
                 d.gaji, d.biaya_produksi, d.cogs, d.biaya_operasional, d.biaya_non_operasional,
                 d.pendapatan_utama, d.pendapatan_lain, d.pendapatan_per_tahun, d.pendapatan_per_bulan,
                 d.rasio_cogs, d.cogs_bawah, d.cogs_atas, d.biaya_antara, d.output,
@@ -95,11 +106,11 @@ class ExcelExporter:
                 if is_even:
                     cell.fill = fill_zebra
 
-                if col_idx in [4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 25, 26, 27, 28]:
+                if col_idx in [5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 26, 27, 28, 29]:
                     if val is not None:
                         cell.number_format = "#,##0"
                         cell.alignment = Alignment(horizontal="right", vertical="center")
-                elif col_idx == 13:
+                elif col_idx == 14:
                     if val is not None:
                         cell.number_format = "0.00%"
                         cell.alignment = Alignment(horizontal="right", vertical="center")
@@ -108,16 +119,20 @@ class ExcelExporter:
                     else:
                         cell.value = ""
                         cell.alignment = Alignment(horizontal="center", vertical="center")
-                elif col_idx in [21, 22, 23]:
+                elif col_idx in [22, 23, 24]:
                     cell.number_format = "0.0000"
                     cell.alignment = Alignment(horizontal="right", vertical="center")
-                elif col_idx in [1, 3, 30]:
+                elif col_idx in [1, 4, 31]:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
-                elif col_idx == 24:
+                elif col_idx == 2:
+                    if val and str(val).startswith("http"):
+                        cell.hyperlink = str(val)
+                        cell.font = Font(name="Segoe UI", size=9, color="0563C1", underline="single")
+                elif col_idx == 25:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                     cell.fill = fill_green
                     cell.font = font_green_bold
-                elif col_idx == 31:
+                elif col_idx == 32:
                     cell.font = font_bold
                     cell.fill = fill_green if "#0" in str(val) else fill_tindak
 
@@ -126,7 +141,7 @@ class ExcelExporter:
         cf_green_font = Font(color="1E4620", bold=True)
         max_row = len(cleaned_records) + 2
         ws_lk.conditional_formatting.add(
-            f"M3:M{max_row}",
+            f"N3:N{max_row}",
             CellIsRule(operator="between", formula=["0.10", "0.50"], stopIfTrue=True, fill=cf_green_fill, font=cf_green_font)
         )
 
@@ -225,9 +240,78 @@ class ExcelExporter:
                 if c_i in [1, 3, 4]:
                     cell.alignment = Alignment(horizontal="center")
 
-        # ==================== SHEET 3: Katalog Penyesuaian Detail ====================
+        all_sheets = [ws_lk, ws_rekap]
+
+        # ==================== SHEET OPSIONAL: Rekapitulasi Petugas ====================
+        if petugas_summaries:
+            ws_petugas = wb.create_sheet(title="Rekapitulasi Petugas")
+            ws_petugas.views.sheetView[0].showGridLines = True
+            all_sheets.append(ws_petugas)
+
+            ws_petugas["A1"] = "REKAPITULASI EVALUASI SELURUH PETUGAS"
+            ws_petugas["A1"].font = font_title
+            ws_petugas["A2"] = f"Daftar Kinerja dan Kepatuhan Kriteria NTB dari {len(petugas_summaries)} Petugas Lapangan"
+            ws_petugas["A2"].font = font_subtitle
+
+            petugas_headers = [
+                "No", "Nama Petugas", "Jumlah Usaha", "Warna Hijau", "Rasio NTB Acuan",
+                "Selisih Minus", "Total NTB Awal", "Total NTB Penyesuaian", "Total Surplus"
+            ]
+            for c_i, h in enumerate(petugas_headers, start=1):
+                cell = ws_petugas.cell(4, c_i, h)
+                cell.fill = fill_h1
+                cell.font = font_header2
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = border_header
+
+            for p_idx, s in enumerate(petugas_summaries, start=1):
+                r_num = 4 + p_idx
+                w_pct = (s.total_warna_hijau / s.total_usaha) * 100 if s.total_usaha > 0 else 0
+                r_pct = (s.total_rasio_hijau / s.total_usaha) * 100 if s.total_usaha > 0 else 0
+                minus_txt = "0 Minus (OK)" if s.total_selisih_minus == 0 else f"{s.total_selisih_minus} Minus"
+
+                p_vals = [
+                    p_idx, s.petugas, s.total_usaha,
+                    f"{w_pct:.1f}%", f"{r_pct:.1f}%",
+                    minus_txt, s.total_ntb_awal, s.total_ntb_adj, s.total_selisih_ntb
+                ]
+                for c_i, val in enumerate(p_vals, start=1):
+                    cell = ws_petugas.cell(r_num, c_i, val)
+                    cell.border = border_cell
+                    cell.font = font_data
+                    if c_i in [1, 4, 5, 6]:
+                        cell.alignment = Alignment(horizontal="center")
+                    elif c_i in [7, 8, 9]:
+                        cell.number_format = "#,##0"
+                        cell.alignment = Alignment(horizontal="right")
+                    if p_idx % 2 == 0:
+                        cell.fill = fill_zebra
+
+            tot_row = 5 + len(petugas_summaries)
+            tot_usaha = sum(s.total_usaha for s in petugas_summaries)
+            tot_ntb_awal = sum(s.total_ntb_awal for s in petugas_summaries)
+            tot_ntb_adj = sum(s.total_ntb_adj for s in petugas_summaries)
+            tot_surplus = sum(s.total_selisih_ntb for s in petugas_summaries)
+            tot_vals = [
+                "", "TOTAL KESELURUHAN", tot_usaha, "100.0%", "100.0%", "0 Minus (OK)",
+                tot_ntb_awal, tot_ntb_adj, tot_surplus
+            ]
+            for c_i, val in enumerate(tot_vals, start=1):
+                cell = ws_petugas.cell(tot_row, c_i, val)
+                cell.border = border_cell
+                cell.font = font_bold
+                cell.fill = fill_green
+                if c_i in [4, 5, 6]:
+                    cell.alignment = Alignment(horizontal="center")
+                elif c_i in [3, 7, 8, 9]:
+                    if isinstance(val, (int, float)):
+                        cell.number_format = "#,##0"
+                    cell.alignment = Alignment(horizontal="right")
+
+        # ==================== SHEET: Katalog Penyesuaian Detail ====================
         ws_log = wb.create_sheet(title="Katalog Penyesuaian Detail")
         ws_log.views.sheetView[0].showGridLines = True
+        all_sheets.append(ws_log)
 
         log_headers = [
             "No", "Nama Usaha", "Status Awal", "Rasio COGS (Warna)", "NTB Awal", "NTB Akhir", "Selisih NTB",
@@ -278,7 +362,7 @@ class ExcelExporter:
                     cell.alignment = Alignment(horizontal="center")
 
         # Auto-adjust column widths
-        for ws in [ws_lk, ws_rekap, ws_log]:
+        for ws in all_sheets:
             for col in ws.columns:
                 max_len = 0
                 col_letter = get_column_letter(col[0].column)

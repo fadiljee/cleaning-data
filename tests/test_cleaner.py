@@ -281,6 +281,66 @@ class TestDataCleaner(unittest.TestCase):
         self.assertGreaterEqual(cleaned.rasio_ntb_output, MIN_NTB_RATIO)
         self.assertLessEqual(cleaned.rasio_ntb_output, MAX_NTB_RATIO)
 
+    def test_safe_float_helpers(self):
+        """Uji konversi aman nilai float dari string error Excel seperti #DIV/0! dan #VALUE!"""
+        from src.cleaner_lapangan import safe_float, safe_float_or_none
+
+        self.assertEqual(safe_float("#DIV/0!", 0.0), 0.0)
+        self.assertEqual(safe_float("#VALUE!", 0.64), 0.64)
+        self.assertEqual(safe_float(None, 10.0), 10.0)
+        self.assertEqual(safe_float("1,500,000", 0.0), 1500000.0)
+        self.assertEqual(safe_float(250000, 0.0), 250000.0)
+
+        self.assertIsNone(safe_float_or_none("#DIV/0!"))
+        self.assertIsNone(safe_float_or_none(None))
+        self.assertIsNone(safe_float_or_none("-"))
+        self.assertEqual(safe_float_or_none("0.72"), 0.72)
+
+    def test_clean_missing_pendapatan_with_div0(self):
+        """Uji kasus data mentah dengan omzet kosong dan rasio awal #DIV/0! (seperti row 9447)"""
+        raw = RawRecord(
+            row_idx=9447,
+            no=9445.0,
+            link="https://fasih.bps.go.id/test9447",
+            link_edit="https://fasih.bps.go.id/test9447/edit",
+            nama_usaha="BAKSO SOLO (MUTIA DALILA)",
+            kategori="G",
+            gaji=0.0,
+            biaya_produksi=0.0,
+            cogs=None,
+            biaya_operasional=0.0,
+            biaya_non_operasional=0.0,
+            pendapatan_utama=0.0,
+            pendapatan_lain=None,
+            ntb_awal=105000000.0,
+            rasio_bawah=0.64,
+            rasio_atas=0.78,
+            status_awal="#DIV/0!",
+            petugas="Shivadiba Marsha Salsabilla, S.Tr.Stat.",
+            sudah_diperbaiki=False,
+            tindak_lanjut=None,
+            catatan=None,
+            rasio_awal=None
+        )
+        cleaned = self.cleaner_lapangan.clean_record(raw)
+
+        # 1. Selisih NTB harus 0.0 (bebas minus)
+        self.assertEqual(cleaned.selisih_ntb, 0.0)
+
+        # 2. Pendapatan dan output berhasil direkonstruksi
+        self.assertGreater(cleaned.pendapatan_utama, 0.0)
+        self.assertGreater(cleaned.output, 0.0)
+
+        # 3. Rasio COGS harus hijau
+        self.assertIsNotNone(cleaned.rasio_cogs)
+        self.assertGreaterEqual(cleaned.rasio_cogs, MIN_COGS_MARGIN)
+        self.assertLessEqual(cleaned.rasio_cogs, MAX_COGS_MARGIN)
+
+        # 4. Rasio NTB harus masuk rentang acuan hijau
+        self.assertGreaterEqual(cleaned.rasio_ntb_output, MIN_NTB_RATIO)
+        self.assertLessEqual(cleaned.rasio_ntb_output, MAX_NTB_RATIO)
+        self.assertEqual(cleaned.status_rasio, "DALAM RENTANG ACUAN")
+
 
 if __name__ == "__main__":
     unittest.main()

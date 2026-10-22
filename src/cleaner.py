@@ -3,7 +3,12 @@ Modul Mesin Pembersihan Data (Cleaning Engine)
 Menerapkan aturan bisnis dan batasan matematis secara deterministik.
 """
 import math
+import warnings
 from typing import Optional, List, Tuple
+
+# Abaikan peringatan format sel tanggal bawaan openpyxl dari file Excel BPS
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+
 import openpyxl
 
 from src.config import (
@@ -19,6 +24,7 @@ from src.config import (
     REMARK_OTHER_METHOD
 )
 from src.models import RawRecord, CleanedRecord, CleaningSummary
+from src.cleaner_lapangan import can_have_production_cost, allocate_intermediate_costs
 
 
 def is_service_or_non_trade(
@@ -156,20 +162,18 @@ class DataCleaner:
                 target_ntb = target_out - ba_target
 
             new_cogs = new_pend - target_out
-            if raw.biaya_produksi > ba_target:
-                new_prod = 0.0
-                new_ops = ba_target
+            new_prod, new_ops = allocate_intermediate_costs(
+                raw.nama_usaha, ba_target, raw.biaya_produksi, raw.biaya_operasional
+            )
+            if raw.biaya_produksi > 0 and not can_have_production_cost(raw.nama_usaha):
                 new_tindak = REMARK_CONCEPT_FIX
-                new_catatan = "Reklasifikasi pos belanja stok ke COGS & rasio hijau"
+                new_catatan = "Reklasifikasi biaya produksi ke operasional (usaha non-produksi fisik) & rasio hijau"
+            elif "DI ATAS" in str(raw.status_awal):
+                new_tindak = REMARK_OTHER_METHOD
+                new_catatan = "Penyesuaian rasio acuan & rasio COGS hijau dengan laba NTB positif"
             else:
-                new_prod = raw.biaya_produksi
-                new_ops = max(ba_target - raw.biaya_produksi, 0.0)
-                if "DI ATAS" in str(raw.status_awal):
-                    new_tindak = REMARK_OTHER_METHOD
-                    new_catatan = "Penyesuaian rasio acuan & rasio COGS hijau dengan laba NTB positif"
-                else:
-                    new_tindak = REMARK_CONCEPT_FIX
-                    new_catatan = "Perbaikan penempatan pos biaya & normalisasi rasio hijau wajar"
+                new_tindak = REMARK_CONCEPT_FIX
+                new_catatan = "Perbaikan penempatan pos biaya & normalisasi rasio hijau wajar"
 
             ba_calc = new_prod + new_ops
             out_calc = new_pend - new_cogs

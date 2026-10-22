@@ -11,7 +11,11 @@ Filosofi:
 6. Selisih NTB diutamakan untung sedikit atau nol (minimal surplus), tanpa membengkakkan biaya.
 """
 import math
+import warnings
 from typing import Optional, List, Tuple
+
+# Abaikan peringatan format sel tanggal bawaan openpyxl dari file Excel BPS
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 import openpyxl
 
@@ -25,18 +29,78 @@ from src.config import (
 from src.models import RawRecord, CleanedRecord, CleaningSummary
 
 
-def is_production_business(nama: str) -> bool:
+def can_have_production_cost(nama: str) -> bool:
     """
-    Mendeteksi apakah usaha secara fisik memiliki proses produksi/pengolahan/reparasi barang.
-    Usaha perdagangan/ritel murni TIDAK memiliki biaya produksi (Biaya Produksi = 0).
+    Mengecek apakah jenis usaha secara wajar dapat memiliki biaya produksi/kemasan/penyiapan barang.
+    Usaha komoditas tertutup murni (pangkalan gas, apotek, dealer, pom mini, agen voucher pulsa)
+    tidak memiliki proses produksi/pengolahan/kemasan fisik mandiri (Biaya Produksi = 0).
+    Usaha lainnya (termasuk toko sembako, warung, keliling sayur/ikan, lapak, bengkel, olahan)
+    dapat memiliki biaya produksi/kemasan/penyiapan barang.
     """
     n = (nama or "").lower()
-    prod_kw = [
-        "bengkel", "jahit", "vermak", "salon", "pangkas", "fotocopy",
-        "las", "mebel", "kayu", "kue", "roti", "tambal ban", "servis", "service",
-        "percetakan", "sablon", "pengrajin", "anyaman", "batik"
+    pure_no_prod = [
+        "pangkalan gas", "agen gas", "lpg", "elpiji",
+        "apotek", "farmasi", "toko obat",
+        "dealer", "showroom", "goda",
+        "top up", "pulsa", "loket", "e-wallet", "ewallet",
+        "pom mini", "pommini", "pertamini", "pertashop", "spbu"
     ]
-    return any(kw in n for kw in prod_kw)
+    return not any(kw in n for kw in pure_no_prod)
+
+
+def allocate_intermediate_costs(
+    nama: str,
+    cand_ba: float,
+    prod0: float,
+    ops0: float,
+) -> Tuple[float, float]:
+    """
+    Mengalokasikan Biaya Antara (cand_ba) ke Biaya Produksi dan Biaya Operasional
+    secara proporsional mempertahankan data asli lapangan dan tidak menghilangkan biaya
+    yang memang seharusnya ada.
+    """
+    if not can_have_production_cost(nama):
+        # Usaha murni non-produksi: Biaya Produksi = 0, seluruhnya dialokasikan ke Biaya Operasional
+        return 0.0, cand_ba
+
+    # Jika di data mentah memang tidak ada biaya produksi (prod0 = 0):
+    if prod0 <= 0:
+        return 0.0, cand_ba
+
+    # Jika di data mentah ada biaya produksi (prod0 > 0):
+    ba0 = prod0 + ops0
+    if ba0 <= 0:
+        return 0.0, cand_ba
+
+    if ops0 <= 0:
+        # Jika operasional awal 0, beri porsi produksi wajar dan sisanya untuk operasional
+        cand_prod = round((cand_ba * 0.65) / ROUNDING_BASE) * ROUNDING_BASE
+        cand_ops = cand_ba - cand_prod
+        return cand_prod, cand_ops
+
+    # Jika kedua biaya ada di data mentah (prod0 > 0 dan ops0 > 0):
+    # Pertahankan proporsi asli lapangan (r_prod = prod0 / ba0)
+    r_prod = prod0 / ba0
+    # Jaga agar porsi produksi antara 10% s.d. 75% sehingga biaya operasional tetap wajar
+    r_prod = max(0.10, min(0.75, r_prod))
+    cand_prod = round((cand_ba * r_prod) / ROUNDING_BASE) * ROUNDING_BASE
+    cand_ops = cand_ba - cand_prod
+
+    # Pastikan kedua pos tetap bernilai jika cand_ba mencukupi
+    if cand_ba >= (2 * ROUNDING_BASE):
+        if cand_prod <= 0:
+            cand_prod = float(ROUNDING_BASE)
+            cand_ops = cand_ba - cand_prod
+        elif cand_ops <= 0:
+            cand_ops = float(ROUNDING_BASE)
+            cand_prod = cand_ba - cand_ops
+
+    return cand_prod, cand_ops
+
+
+def is_production_business(nama: str) -> bool:
+    """Kompatibilitas mundur: mendeteksi usaha manufaktur/jasa fisik."""
+    return can_have_production_cost(nama)
 
 
 def get_row_target_ratio(
@@ -151,13 +215,8 @@ def _clean_with_lapangan_mode(
             cand_ba = cand_out - cand_ntb
             selisih = cand_ntb - ntb0
 
-            # Alokasi biaya secara kontekstual sesuai jenis usaha
-            if not is_prod:
-                cand_prod = 0.0
-                cand_ops = cand_ba
-            else:
-                cand_prod = min(prod0, round((cand_ba * 0.35) / ROUNDING_BASE) * ROUNDING_BASE)
-                cand_ops = cand_ba - cand_prod
+            # Alokasi biaya secara kontekstual sesuai jenis usaha (mempertahankan data biaya lapangan)
+            cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
             r_cogs = cand_out / cand_p
             r_ntb = cand_ntb / cand_out if cand_out > 0 else 0.0
@@ -165,15 +224,15 @@ def _clean_with_lapangan_mode(
             if (MIN_COGS_MARGIN <= r_cogs <= MAX_COGS_MARGIN and
                     min_ntb_ratio <= r_ntb <= max_ntb_ratio and
                     selisih >= target_surplus):
-                if prod0 > 0 and not is_prod:
-                    tindak = REMARK_CONCEPT_FIX
-                    catatan = "Reklasifikasi biaya produksi ke COGS & penyesuaian biaya operasional wajar"
-                elif p_mult > 1.0:
+                if p_mult > 1.0:
                     tindak = REMARK_OTHER_METHOD
                     catatan = "Penyesuaian omzet minimal & COGS mendekati rentang acuan"
+                elif prod0 > 0 and not can_have_production_cost(nama):
+                    tindak = REMARK_CONCEPT_FIX
+                    catatan = "Reklasifikasi biaya produksi ke operasional (usaha non-produksi fisik) & COGS wajar"
                 else:
                     tindak = REMARK_CONCEPT_FIX
-                    catatan = "Penyesuaian COGS dan biaya operasional wajar mendekati data lapangan"
+                    catatan = "Penyesuaian COGS dan biaya operasional/produksi wajar mempertahankan data lapangan"
 
                 best_solution = (
                     cand_p, cand_cogs, cand_prod, cand_ops, cand_out, cand_ntb, selisih,
@@ -196,12 +255,7 @@ def _clean_with_lapangan_mode(
                 cand_ba = cand_out - cand_ntb
                 selisih = cand_ntb - ntb0
 
-                if not is_prod:
-                    cand_prod = 0.0
-                    cand_ops = cand_ba
-                else:
-                    cand_prod = min(prod0, round((cand_ba * 0.35) / ROUNDING_BASE) * ROUNDING_BASE)
-                    cand_ops = cand_ba - cand_prod
+                cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
                 r_cogs = cand_out / cand_p
                 r_ntb = cand_ntb / cand_out if cand_out > 0 else 0.0
@@ -210,7 +264,7 @@ def _clean_with_lapangan_mode(
                         min_ntb_ratio <= r_ntb <= max_ntb_ratio and
                         selisih >= 0.0):
                     tindak = REMARK_CONCEPT_FIX
-                    catatan = "Penyesuaian COGS dan biaya operasional wajar mendekati data lapangan"
+                    catatan = "Penyesuaian COGS dan biaya operasional/produksi wajar mempertahankan data lapangan"
                     best_solution = (
                         cand_p, cand_cogs, cand_prod, cand_ops, cand_out, cand_ntb, selisih,
                         r_ntb, r_cogs, tindak, catatan
@@ -223,7 +277,7 @@ def _clean_with_lapangan_mode(
     # Jika NTB awal data mentah sangat tinggi akibat survei awal tidak mengisi COGS (misal Toko Pupuk / Toko Sembako / Pengepul Karet),
     # jaga Output dan Biaya tetap di RENTANG NORMAL (margin 25%-30%), omzet tetap p0!
     # Sesuai arahan: jika kondisi ini tidak bisa membuat selisih NTB menjadi plus tanpa membengkakkan angka,
-    # ubah selisih menjadi 0 (nol), tetapi tetap pertahankan COGS, Biaya Produksi (0 untuk usaha dagang),
+    # ubah selisih menjadi 0 (nol), tetapi tetap pertahankan COGS, Biaya Produksi (jika ada),
     # dan Biaya Operasional agar tetap wajar dan tidak tinggi.
     if best_solution is None:
         cand_p = p0
@@ -232,12 +286,7 @@ def _clean_with_lapangan_mode(
         cand_cogs = cand_p - cand_out
         cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
         cand_ba = cand_out - cand_ntb
-        if not is_prod:
-            cand_prod = 0.0
-            cand_ops = cand_ba
-        else:
-            cand_prod = min(prod0, round((cand_ba * 0.35) / ROUNDING_BASE) * ROUNDING_BASE)
-            cand_ops = cand_ba - cand_prod
+        cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
         # Selisih diset 0.0 agar tidak minus dan tidak memaksakan pembengkakan biaya
         selisih = 0.0

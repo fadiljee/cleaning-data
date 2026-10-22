@@ -3,7 +3,11 @@ Entrypoint CLI Utama untuk Pembersihan dan Validasi Data LK
 """
 import argparse
 import sys
+import warnings
 from pathlib import Path
+
+# Abaikan peringatan format sel tanggal bawaan openpyxl dari file Excel BPS
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 import openpyxl
 

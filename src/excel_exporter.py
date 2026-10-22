@@ -48,12 +48,12 @@ class ExcelExporter:
         ws_lk.views.sheetView[0].showGridLines = True
 
         header_row1 = [
-            "", "", "", "", "", "26a", "26b", "26c", "26d", "26e", "27a", "27b",
-            "(27a+27b)-(26a+26b+26c+26d+26e)", "m/12", "Status Berdasarkan warna", "0.1", "0.5",
-            "", "=K-H", "=S-R", "", "", "", "Rasio NTB", "", "", "Biaya Antara", "", "Pendapatan", "", "", "", "", ""
+            "", "", "", "26a", "26b", "26c", "26d", "26e", "27a", "27b",
+            "(27a+27b)-(26a+26b+26c+26d+26e)", "k/12", "Status Berdasarkan warna", "0.1", "0.5",
+            "", "=I-F", "=Q-P", "", "", "", "Rasio NTB", "", "", "Biaya Antara", "", "Pendapatan", "", "", "", "", ""
         ]
         header_row2 = [
-            "No", "Link", "Link Edit", "Nama Usaha", "Kategori", "Gaji", "Biaya Produksi", "COGS", "Biaya Operasional",
+            "No", "Nama Usaha", "Kategori", "Gaji", "Biaya Produksi", "COGS", "Biaya Operasional",
             "Biaya non Operasional", "Pendapatan Utama", "Pendapatan Lain", "Pendapatan Per Tahun", "Pendapatan Per Bulan",
             "Rasio COGS", "COGS Bawah", "COGS Atas", "Biaya Antara", "Output", "NTB Adj", "NTB Awal", "Selisih NTB",
             "Rasio NTB/Output", "Bawah", "Atas", "Status Rasio", "BA Bawah", "BA Atas", "Pend Bawah", "Pend Atas",
@@ -77,7 +77,7 @@ class ExcelExporter:
 
         for row_num, d in enumerate(cleaned_records, start=3):
             row_vals = [
-                d.no, d.link, d.link_edit, d.nama_usaha, d.kategori,
+                d.no, d.nama_usaha, d.kategori,
                 d.gaji, d.biaya_produksi, d.cogs, d.biaya_operasional, d.biaya_non_operasional,
                 d.pendapatan_utama, d.pendapatan_lain, d.pendapatan_per_tahun, d.pendapatan_per_bulan,
                 d.rasio_cogs, d.cogs_bawah, d.cogs_atas, d.biaya_antara, d.output,
@@ -95,11 +95,11 @@ class ExcelExporter:
                 if is_even:
                     cell.fill = fill_zebra
 
-                if col_idx in [6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 27, 28, 29, 30]:
+                if col_idx in [4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 25, 26, 27, 28]:
                     if val is not None:
                         cell.number_format = "#,##0"
                         cell.alignment = Alignment(horizontal="right", vertical="center")
-                elif col_idx == 15:
+                elif col_idx == 13:
                     if val is not None:
                         cell.number_format = "0.00%"
                         cell.alignment = Alignment(horizontal="right", vertical="center")
@@ -108,16 +108,16 @@ class ExcelExporter:
                     else:
                         cell.value = ""
                         cell.alignment = Alignment(horizontal="center", vertical="center")
-                elif col_idx in [23, 24, 25]:
+                elif col_idx in [21, 22, 23]:
                     cell.number_format = "0.0000"
                     cell.alignment = Alignment(horizontal="right", vertical="center")
-                elif col_idx in [1, 5, 32]:
+                elif col_idx in [1, 3, 30]:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
-                elif col_idx == 26:
+                elif col_idx == 24:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                     cell.fill = fill_green
                     cell.font = font_green_bold
-                elif col_idx == 33:
+                elif col_idx == 31:
                     cell.font = font_bold
                     cell.fill = fill_green if "#0" in str(val) else fill_tindak
 
@@ -126,7 +126,7 @@ class ExcelExporter:
         cf_green_font = Font(color="1E4620", bold=True)
         max_row = len(cleaned_records) + 2
         ws_lk.conditional_formatting.add(
-            f"O3:O{max_row}",
+            f"M3:M{max_row}",
             CellIsRule(operator="between", formula=["0.10", "0.50"], stopIfTrue=True, fill=cf_green_fill, font=cf_green_font)
         )
 

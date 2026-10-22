@@ -156,20 +156,27 @@ class TestDataCleaner(unittest.TestCase):
             self.assertLessEqual(cleaned.rasio_cogs, MAX_COGS_MARGIN)
 
     def test_contextual_cost_allocation_trade_vs_prod(self):
-        """Uji alokasi biaya: usaha dagang biaya produksi = 0, usaha bengkel punya produksi"""
+        """Uji alokasi biaya: komoditas tertutup murni (pangkalan gas) prod = 0, toko sembako/bengkel prod tetap ada"""
+        raw_gas = self.create_sample_raw("DI ATAS 0.78", 120000000.0, 80000000.0, 5000000.0, 2000000.0, 25000000.0)
+        raw_gas.nama_usaha = "PANGKALAN GAS ELPIJI (KARTINI)"
+        cleaned_gas = self.cleaner_lapangan.clean_record(raw_gas)
+
+        # Untuk pangkalan gas: biaya produksi fisik harus 0 (komoditas tertutup murni)
+        self.assertEqual(cleaned_gas.biaya_produksi, 0.0)
+        self.assertLess(cleaned_gas.biaya_operasional, 20000000.0)
+
         raw_trade = self.create_sample_raw("DI ATAS 0.78", 120000000.0, 80000000.0, 5000000.0, 2000000.0, 25000000.0)
         raw_trade.nama_usaha = "TOKO SEMBAKO MAJU JAYA"
         cleaned_trade = self.cleaner_lapangan.clean_record(raw_trade)
-
-        # Untuk toko sembako: biaya produksi harus 0
-        self.assertEqual(cleaned_trade.biaya_produksi, 0.0)
-        # Biaya operasional harus wajar (tidak membengkak)
-        self.assertLess(cleaned_trade.biaya_operasional, 20000000.0)
+        # Untuk toko sembako yang di survei punya biaya kemasan/produksi (5M), pos produksi dipertahankan!
+        self.assertGreater(cleaned_trade.biaya_produksi, 0.0)
+        self.assertGreater(cleaned_trade.biaya_operasional, 0.0)
 
         raw_prod = self.create_sample_raw("DI ATAS 0.78", 120000000.0, 60000000.0, 8000000.0, 2000000.0, 30000000.0)
         raw_prod.nama_usaha = "BENGKEL MOTOR SENTOSA"
         cleaned_prod = self.cleaner_lapangan.clean_record(raw_prod)
         self.assertGreater(cleaned_prod.biaya_produksi, 0.0)
+        self.assertGreater(cleaned_prod.biaya_operasional, 0.0)
 
     def test_varied_ntb_ratios_not_uniform(self):
         """Uji bahwa rasio NTB bervariasi alami antar usaha (tidak seragam 72.00%)"""

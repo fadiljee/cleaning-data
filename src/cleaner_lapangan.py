@@ -81,7 +81,8 @@ def is_trade_with_cogs(nama: str, kategori: str, cogs0_f: Optional[float], pend_
     n = (nama or "").lower()
     retail_keywords = [
         "toko", "sembako", "kelontong", "warung", "mart", "kios", "grosir",
-        "distributor", "lapak", "pengecer", "jual", "top up", "wallet", "pulsa", "cell", "counter", "loket"
+        "distributor", "lapak", "pengecer", "jual", "top up", "wallet", "pulsa", "cell", "counter", "loket",
+        "apotek", "farmasi", "obat", "pangkalan", "agen", "depot"
     ]
     if any(rk in n for rk in retail_keywords):
         return True
@@ -189,6 +190,20 @@ def get_row_target_ratio(
     return round(max(safe_min, min(safe_max, r)), 4)
 
 
+def get_rbase(val: float) -> float:
+    """
+    Menentukan basis pembulatan dinamis:
+    - 1.0 untuk nominal sangat kecil (<= 1.000) agar rasio akurat
+    - 1.000 untuk nominal kecil (<= 50.000)
+    - ROUNDING_BASE (10.000) untuk nominal normal
+    """
+    if val <= 1000.0:
+        return 1.0
+    elif val <= 50000.0:
+        return 1000.0
+    return ROUNDING_BASE
+
+
 def _clean_with_lapangan_mode(
     raw: RawRecord,
     target_ntb_ratio: float = TARGET_NTB_RATIO,
@@ -200,32 +215,39 @@ def _clean_with_lapangan_mode(
     """
     Membersihkan satu record dalam mode 'Sesuai Lapangan'.
 
-    Prinsip:
-    1. Utamakan mempertahankan data asli.
-    2. Output perdagangan berada pada rentang margin normal (12% - 48%).
-    3. Biaya dialokasikan sesuai jenis usaha:
-       - Ritel/warung/sembako/pengepul: Biaya Produksi = 0, Biaya Operasional wajar.
-    4. Rasio NTB bervariasi alami dalam rentang hijau [min_ntb_ratio, max_ntb_ratio].
-    5. Selisih NTB diutamakan minimal positif (untung sedikit / nol).
+    Prinsip Utama:
+    1. Seluruh baris dijamin hijau (Rasio COGS 10%-50% & Rasio NTB 0.64-0.78).
+    2. Pendapatan per bulan (m/12) dan tahun bebas minus (NTB >= Biaya Tetap: Gaji + NonOps - PendLain).
+    3. Selisih NTB dijamin bebas minus (NTB Adj >= NTB Awal) tanpa memalsukan nilai NTB Awal asli.
+    4. Jika surplus tidak bisa positif tanpa pembengkakan angka, selisih dibuat 0 (impas) dengan menyesuaikan data wajar.
+    5. Pos biaya disesuaikan secara kontekstual sesuai jenis usaha (biaya produksi dipertahankan untuk usaha relevan).
     """
     p0 = raw.pendapatan_utama
     cogs0 = raw.cogs
     prod0 = raw.biaya_produksi
     ops0 = raw.biaya_operasional
     ntb0 = raw.ntb_awal
+    gaji0 = raw.gaji
+    nonops0 = raw.biaya_non_operasional
+    pend_lain0 = raw.pendapatan_lain or 0.0
     nama = raw.nama_usaha
     nama_lower = (nama or "").lower()
 
     cogs0_f = float(cogs0) if cogs0 is not None and str(cogs0).strip() not in ("", "None") else None
-    is_prod = is_production_business(nama)
     target_r = get_row_target_ratio(raw.row_idx, nama, target_ntb_ratio, min_ntb_ratio, max_ntb_ratio)
+
+    # Biaya tetap yang wajib tertutupi NTB agar laba bersih per tahun (dan m/12) >= 0
+    fixed_cost = max(gaji0 + nonops0 - pend_lain0, 0.0)
+    # NTB minimal agar selisih NTB >= 0 dan laba per bulan (m/12) >= 0
+    min_required_ntb = max(ntb0, fixed_cost, 0.0)
 
     # -- KASUS KHUSUS 0: Data mentah dengan omzet/pendapatan kosong atau 0 --
     if p0 <= 0:
-        if ntb0 > 0:
-            cand_ntb = ntb0
-            cand_out = round((cand_ntb / target_r) / ROUNDING_BASE) * ROUNDING_BASE
-            cand_ba = cand_out - cand_ntb
+        if min_required_ntb > 0:
+            cand_ntb = min_required_ntb
+            rbase = get_rbase(cand_ntb)
+            cand_out = round((cand_ntb / target_r) / rbase) * rbase
+            cand_ba = max(cand_out - cand_ntb, 0.0)
             cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
             is_service = any(k in nama_lower for k in [
@@ -243,9 +265,9 @@ def _clean_with_lapangan_mode(
                 r_cogs = cand_out / cand_p
 
             r_ntb = cand_ntb / cand_out if cand_out > 0 else target_r
-            selisih = 0.0
+            selisih = max(cand_ntb - ntb0, 0.0)
             tindak = REMARK_CONCEPT_FIX
-            catatan = "Rekonstruksi omzet, COGS, dan biaya dari NTB awal survei (data omzet survei awal kosong)"
+            catatan = "Rekonstruksi omzet, COGS, dan biaya dari data awal survei (data omzet survei awal kosong)"
 
             return _build_record(
                 raw, cand_p, cand_cogs, cand_prod, cand_ops, cand_out, cand_ntb,
@@ -257,12 +279,12 @@ def _clean_with_lapangan_mode(
         else:
             return _build_record(
                 raw, 0.0, None, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, target_r, None,
+                ntb0, 0.0, target_r, None,
                 None, None,
                 REMARK_NO_CHANGE, "Usaha nihil / tidak ada data keuangan"
             )
 
-    # -- KONDISI 1: Data lapangan asli SUDAH HIJAU dan selisih >= min_surplus --
+    # -- KONDISI 1: Data lapangan asli SUDAH HIJAU, selisih >= min_surplus, dan m/12 >= 0 --
     if cogs0_f is not None and p0 > 0:
         raw_out = p0 - cogs0_f
         raw_ba = prod0 + ops0
@@ -270,11 +292,12 @@ def _clean_with_lapangan_mode(
         raw_rcogs = raw_out / p0
         raw_rntb = raw_ntb / raw_out if raw_out > 0 else 0.0
 
-        cogs_ok = min_cogs_margin_ok = (MIN_COGS_MARGIN <= raw_rcogs <= MAX_COGS_MARGIN)
-        ntb_ok = min_ntb_ratio <= raw_rntb <= max_ntb_ratio
+        cogs_ok = (MIN_COGS_MARGIN <= raw_rcogs <= MAX_COGS_MARGIN)
+        ntb_ok = (min_ntb_ratio <= raw_rntb <= max_ntb_ratio)
         surplus_ok = (raw_ntb - ntb0) >= min_surplus
+        m12_ok = (raw_ntb - fixed_cost) >= 0.0
 
-        if cogs_ok and ntb_ok and surplus_ok:
+        if cogs_ok and ntb_ok and surplus_ok and m12_ok:
             return _build_record(
                 raw, p0, cogs0_f, prod0, ops0, raw_out, raw_ntb,
                 ntb0, raw_ntb - ntb0, raw_rntb, raw_rcogs,
@@ -289,7 +312,7 @@ def _clean_with_lapangan_mode(
         raw_ntb = raw_out - raw_ba
         raw_rntb = raw_ntb / raw_out if raw_out > 0 else 0.0
 
-        if min_ntb_ratio <= raw_rntb <= max_ntb_ratio and (raw_ntb - ntb0) >= min_surplus:
+        if min_ntb_ratio <= raw_rntb <= max_ntb_ratio and (raw_ntb - ntb0) >= min_surplus and (raw_ntb - fixed_cost) >= 0.0:
             return _build_record(
                 raw, p0, None, prod0, ops0, raw_out, raw_ntb,
                 ntb0, raw_ntb - ntb0, raw_rntb, None,
@@ -297,73 +320,86 @@ def _clean_with_lapangan_mode(
                 REMARK_NO_CHANGE, "Data lapangan sudah sesuai acuan (usaha jasa/tanpa COGS)"
             )
 
-        # Sesuaikan target NTB dan output
-        needed_out = round((ntb0 / target_r) / ROUNDING_BASE) * ROUNDING_BASE
-        if ntb0 > 0 and needed_out <= p0 * max_multiplier:
-            cand_p = needed_out
-            cand_out = needed_out
-            cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
-            selisih = cand_ntb - ntb0
-        else:
-            cand_p = p0
-            cand_out = p0
-            cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
-            selisih = 0.0
+        all_multipliers = [1.0, 1.02, 1.05, 1.08, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35, 1.40, 1.50, 1.65, 1.80, 2.0]
+        p_multipliers = [m for m in all_multipliers if m <= max_multiplier + 0.001]
+        if not p_multipliers:
+            p_multipliers = [1.0]
 
-        cand_ba = max(cand_out - cand_ntb, 0.0)
-        cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
-        r_ntb = cand_ntb / cand_out if cand_out > 0 else target_r
-        tindak = REMARK_CONCEPT_FIX
-        catatan = "Penyesuaian biaya usaha jasa/non-dagang tanpa COGS sesuai rentang acuan"
+        best_sol = None
+        for p_mult in p_multipliers:
+            cand_p = max(p0, 10000.0) if p0 < 100000 else round((p0 * p_mult) / 100000) * 100000
+            cand_out = cand_p
+            rbase = get_rbase(cand_out)
+            cand_ntb = round((cand_out * target_r) / rbase) * rbase
+            cand_ba = max(cand_out - cand_ntb, 0.0)
 
-        ntb_awal_record = cand_ntb if (selisih == 0.0 and (cand_ntb - ntb0) < 0) else ntb0
+            if cand_ntb >= min_required_ntb:
+                cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
+                r_ntb = cand_ntb / cand_out
+                selisih = max(cand_ntb - ntb0, 0.0)
+                tindak = REMARK_CONCEPT_FIX if p_mult == 1.0 else REMARK_OTHER_METHOD
+                catatan = "Penyesuaian biaya usaha jasa/non-dagang sesuai rentang acuan"
+                best_sol = (cand_p, None, cand_prod, cand_ops, cand_out, cand_ntb, selisih, r_ntb, None, tindak, catatan)
+                break
+
+        if best_sol is None:
+            # Fallback non-dagang: buat selisih 0 atau tutupi biaya tetap
+            cand_ntb = max(ntb0, fixed_cost)
+            rbase = get_rbase(cand_ntb)
+            cand_out = round((cand_ntb / target_r) / rbase) * rbase
+            if cand_out <= 0:
+                cand_out = max(cand_ntb, 1.0)
+            cand_p = cand_out
+            cand_ba = max(cand_out - cand_ntb, 0.0)
+            cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
+            r_ntb = cand_ntb / cand_out if cand_out > 0 else target_r
+            selisih = max(cand_ntb - ntb0, 0.0)
+            tindak = REMARK_OTHER_METHOD
+            catatan = "Penyesuaian omzet dan biaya usaha jasa/non-dagang agar impas / laba wajar"
+            best_sol = (cand_p, None, cand_prod, cand_ops, cand_out, cand_ntb, selisih, r_ntb, None, tindak, catatan)
+
+        (new_p, new_c, new_prod, new_ops, new_out, new_ntb, selisih_final,
+         r_ntb_final, r_cogs_final, tindak_lanjut, catatan_final) = best_sol
 
         return _build_record(
-            raw, cand_p, None, cand_prod, cand_ops, cand_out, cand_ntb,
-            ntb_awal_record, max(selisih, 0.0), r_ntb, None,
-            None, None,
-            tindak, catatan
+            raw, new_p, new_c, new_prod, new_ops, new_out, new_ntb,
+            ntb0, max(selisih_final, 0.0), r_ntb_final, r_cogs_final,
+            None, None, tindak_lanjut, catatan_final
         )
 
-    # -- KONDISI 3: Optimasi Cerdas Kontekstual & Minimal Surplus --
-    # Surplus deterministik kecil: 0 s.d. 300rb Rupiah
+    # -- KONDISI 3: Usaha Perdagangan dengan COGS --
     if min_surplus > 0:
         target_surplus = min_surplus
     else:
         target_surplus = ((raw.row_idx * 17) % 7) * 50000.0  # 0, 50k, 100k, 150k, 200k, 250k, 300k
 
-    best_solution = None
     all_multipliers = [1.0, 1.02, 1.05, 1.08, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35, 1.40, 1.50, 1.65, 1.80, 2.0]
     p_multipliers = [m for m in all_multipliers if m <= max_multiplier + 0.001]
     if not p_multipliers:
         p_multipliers = [1.0]
 
+    best_solution = None
+    # Prioritas 1: Optimasi cerdas dengan target_surplus dan laba positif (m/12 >= 0)
     for p_mult in p_multipliers:
-        if p0 < 100000:
-            cand_p = max(p0, 10000.0)
-        else:
-            cand_p = round((p0 * p_mult) / 100000) * 100000
-            if cand_p <= 0:
-                cand_p = p0
-
-        # Cari persentase margin Output/Pendapatan antara 12% s.d. 48% (rentang normal perdagangan)
+        cand_p = max(p0, 10000.0) if p0 < 100000 else round((p0 * p_mult) / 100000) * 100000
         for m_int in range(12, 49):
             m = m_int / 100.0
-            cand_out = round((cand_p * m) / ROUNDING_BASE) * ROUNDING_BASE
+            rbase_out = get_rbase(cand_p * m)
+            cand_out = round((cand_p * m) / rbase_out) * rbase_out
             cand_cogs = cand_p - cand_out
-            cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
-            cand_ba = cand_out - cand_ntb
+            rbase_ntb = get_rbase(cand_out * target_r)
+            cand_ntb = round((cand_out * target_r) / rbase_ntb) * rbase_ntb
+            cand_ba = max(cand_out - cand_ntb, 0.0)
             selisih = cand_ntb - ntb0
-
-            # Alokasi biaya secara kontekstual sesuai jenis usaha (mempertahankan data biaya lapangan)
-            cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
             r_cogs = (cand_out / cand_p) if cand_p > 0 else 0.0
             r_ntb = (cand_ntb / cand_out) if cand_out > 0 else 0.0
 
             if (MIN_COGS_MARGIN <= r_cogs <= MAX_COGS_MARGIN and
                     min_ntb_ratio <= r_ntb <= max_ntb_ratio and
-                    selisih >= target_surplus):
+                    selisih >= target_surplus and
+                    (cand_ntb - fixed_cost) >= 0.0):
+                cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
                 if p_mult > 1.0:
                     tindak = REMARK_OTHER_METHOD
                     catatan = "Penyesuaian omzet minimal & COGS mendekati rentang acuan"
@@ -379,35 +415,31 @@ def _clean_with_lapangan_mode(
                     r_ntb, r_cogs, tindak, catatan
                 )
                 break
-
         if best_solution is not None:
             break
 
-    # Jika belum ada solusi dengan target_surplus, coba sekali lagi dengan selisih >= 0
-    if best_solution is None and target_surplus > 0:
+    # Prioritas 2: Jika belum ada solusi dengan target_surplus, cari solusi dengan selisih >= 0 dan m/12 >= 0
+    if best_solution is None:
         for p_mult in p_multipliers:
-            if p0 < 100000:
-                cand_p = max(p0, 10000.0)
-            else:
-                cand_p = round((p0 * p_mult) / 100000) * 100000
-                if cand_p <= 0:
-                    cand_p = p0
+            cand_p = max(p0, 10000.0) if p0 < 100000 else round((p0 * p_mult) / 100000) * 100000
             for m_int in range(12, 49):
                 m = m_int / 100.0
-                cand_out = round((cand_p * m) / ROUNDING_BASE) * ROUNDING_BASE
+                rbase_out = get_rbase(cand_p * m)
+                cand_out = round((cand_p * m) / rbase_out) * rbase_out
                 cand_cogs = cand_p - cand_out
-                cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
-                cand_ba = cand_out - cand_ntb
+                rbase_ntb = get_rbase(cand_out * target_r)
+                cand_ntb = round((cand_out * target_r) / rbase_ntb) * rbase_ntb
+                cand_ba = max(cand_out - cand_ntb, 0.0)
                 selisih = cand_ntb - ntb0
-
-                cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
                 r_cogs = (cand_out / cand_p) if cand_p > 0 else 0.0
                 r_ntb = (cand_ntb / cand_out) if cand_out > 0 else 0.0
 
                 if (MIN_COGS_MARGIN <= r_cogs <= MAX_COGS_MARGIN and
                         min_ntb_ratio <= r_ntb <= max_ntb_ratio and
-                        selisih >= 0.0):
+                        selisih >= 0.0 and
+                        (cand_ntb - fixed_cost) >= 0.0):
+                    cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
                     tindak = REMARK_CONCEPT_FIX
                     catatan = "Penyesuaian COGS dan biaya operasional/produksi wajar mempertahankan data lapangan"
                     best_solution = (
@@ -418,31 +450,29 @@ def _clean_with_lapangan_mode(
             if best_solution is not None:
                 break
 
-    # -- KONDISI 4: Fallback untuk anomali ekstrim data mentah (NTB awal > 50% omzet) --
-    # Jika NTB awal data mentah sangat tinggi akibat survei awal tidak mengisi COGS (misal Toko Pupuk / Toko Sembako / Pengepul Karet),
-    # jaga Output dan Biaya tetap di RENTANG NORMAL (margin 25%-30%), omzet tetap p0!
-    # Sesuai arahan: jika kondisi ini tidak bisa membuat selisih NTB menjadi plus tanpa membengkakkan angka,
-    # ubah selisih menjadi 0 (nol), tetapi tetap pertahankan COGS, Biaya Produksi (jika ada),
-    # dan Biaya Operasional agar tetap wajar dan tidak tinggi.
+    # Prioritas 3 (Fallback): Normalisasi dengan mempertahankan selisih 0 (impas) atau menutupi biaya tetap
+    # NTB Adj diatur sama dengan NTB Awal asli (selisih = 0.0) atau menutupi biaya tetap (m/12 >= 0),
+    # dan data omzet/COGS disesuaikan agar rasio tetap hijau.
     if best_solution is None:
-        cand_p = p0
-        m = 0.28
-        cand_out = round((cand_p * m) / ROUNDING_BASE) * ROUNDING_BASE
+        cand_ntb = max(ntb0, fixed_cost)
+        rbase = get_rbase(cand_ntb)
+        cand_out = round((cand_ntb / target_r) / rbase) * rbase
         if cand_out <= 0:
-            cand_out = max(round(cand_p * m), 1.0)
-        cand_cogs = max(cand_p - cand_out, 0.0)
-        cand_ntb = round((cand_out * target_r) / ROUNDING_BASE) * ROUNDING_BASE
-        if cand_ntb <= 0:
-            cand_ntb = max(round(cand_out * target_r), 1.0)
+            cand_out = max(cand_ntb, 1.0)
         cand_ba = max(cand_out - cand_ntb, 0.0)
         cand_prod, cand_ops = allocate_intermediate_costs(nama, cand_ba, prod0, ops0)
 
-        # Selisih diset 0.0 agar tidak minus dan tidak memaksakan pembengkakan biaya
-        selisih = 0.0
-        r_cogs = (cand_out / cand_p) if cand_p > 0 else None
+        # Margin normal perdagangan ~35% agar rasio COGS hijau (antara 10% s.d. 50%)
+        margin_trade = 0.35
+        cand_p = max(round((cand_out / margin_trade) / 100000) * 100000, round(cand_out / 0.48 / 100000) * 100000)
+        if cand_p <= cand_out:
+            cand_p = round((cand_out / 0.45) / 100000) * 100000
+        cand_cogs = cand_p - cand_out
+        r_cogs = (cand_out / cand_p) if cand_p > 0 else 0.35
         r_ntb = (cand_ntb / cand_out) if cand_out > 0 else target_r
+        selisih = max(cand_ntb - ntb0, 0.0)
         tindak = REMARK_OTHER_METHOD
-        catatan = "Normalisasi output & biaya wajar sesuai sektor usaha (selisih disesuaikan Rp 0 karena koreksi COGS survei awal)"
+        catatan = "Normalisasi COGS dan output wajar (selisih disesuaikan Rp 0 / impas)"
         best_solution = (
             cand_p, cand_cogs, cand_prod, cand_ops, cand_out, cand_ntb, selisih,
             r_ntb, r_cogs, tindak, catatan
@@ -451,21 +481,12 @@ def _clean_with_lapangan_mode(
     (new_p, new_c, new_prod, new_ops, new_out, new_ntb, selisih_final,
      r_ntb_final, r_cogs_final, tindak_lanjut, catatan_final) = best_solution
 
-    # Proteksi: jika terdapat kondisi yang menghasilkan selisih minus,
-    # ubah menjadi 0 (nol) agar selisih bebas minus sesuai arahan user.
-    if selisih_final < 0.0:
-        selisih_final = 0.0
-        if "selisih disesuaikan" not in catatan_final:
-            catatan_final = f"{catatan_final} (selisih disesuaikan Rp 0)"
-
-    # Untuk baris yang selisihnya disesuaikan 0 (karena koreksi anomali survei awal),
-    # sesuaikan ntb_awal_record agar konsisten dengan ntb_adj (NTB Adj - NTB Awal = 0).
-    ntb_awal_record = new_ntb if (selisih_final == 0.0 and (new_ntb - ntb0) < 0) else ntb0
-
     return _build_record(
         raw, new_p, new_c, new_prod, new_ops, new_out, new_ntb,
-        ntb_awal_record, selisih_final, r_ntb_final, r_cogs_final,
-        new_p * 0.90, new_p * 0.50, tindak_lanjut, catatan_final
+        ntb0, max(selisih_final, 0.0), r_ntb_final, r_cogs_final,
+        new_p * 0.90 if new_c is not None else None,
+        new_p * 0.50 if new_c is not None else None,
+        tindak_lanjut, catatan_final
     )
 
 
@@ -492,7 +513,12 @@ def _build_record(
     pend_tahun = (new_pend + pend_lain) - (
         raw.gaji + new_prod + cogs_val + new_ops + raw.biaya_non_operasional
     )
+    # Proteksi: pembulatan float tidak boleh menghasilkan -0.0
+    if abs(pend_tahun) < 1e-6:
+        pend_tahun = 0.0
     pend_bulan = pend_tahun / 12.0
+    if abs(pend_bulan) < 1e-6:
+        pend_bulan = 0.0
 
     ba_calc = new_prod + new_ops
     ba_tgt_bawah = out_calc * (1.0 - raw.rasio_bawah)

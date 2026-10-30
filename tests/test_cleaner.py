@@ -261,25 +261,71 @@ class TestDataCleaner(unittest.TestCase):
         )
         cleaned = self.cleaner_lapangan.clean_record(raw)
 
-        # 1. Selisih NTB harus 0.0 (bebas minus)
+        # 1. Selisih NTB harus 0.0 (bebas minus) dan NTB awal asli tetap dipertahankan
         self.assertEqual(cleaned.selisih_ntb, 0.0)
+        self.assertEqual(cleaned.ntb_awal, raw.ntb_awal)
+        self.assertEqual(cleaned.ntb_adj, raw.ntb_awal)
 
-        # 2. Output harus di rentang wajar sektor perdagangan (margin 20% - 35%)
-        self.assertGreaterEqual(cleaned.output, 24000000.0)
-        self.assertLessEqual(cleaned.output, 45000000.0)
+        # 2. Pendapatan per bulan (m/12) dan tahun tidak boleh minus
+        self.assertGreaterEqual(cleaned.pendapatan_per_bulan, 0.0)
+        self.assertGreaterEqual(cleaned.pendapatan_per_tahun, 0.0)
 
         # 3. Biaya produksi harus 0 untuk pedagang karet
         self.assertEqual(cleaned.biaya_produksi, 0.0)
 
-        # 4. Biaya operasional wajar dan tidak tinggi (< 15 juta)
-        self.assertLessEqual(cleaned.biaya_operasional, 15000000.0)
+        # 4. Rasio COGS masuk rentang hijau (10% - 50%)
+        self.assertIsNotNone(cleaned.rasio_cogs)
+        self.assertGreaterEqual(cleaned.rasio_cogs, MIN_COGS_MARGIN)
+        self.assertLessEqual(cleaned.rasio_cogs, MAX_COGS_MARGIN)
 
-        # 5. COGS wajar dan normal (> 70 juta)
-        self.assertGreaterEqual(cleaned.cogs, 70000000.0)
-
-        # 6. Rasio NTB tetap dalam rentang acuan hijau
+        # 5. Rasio NTB tetap dalam rentang acuan hijau
         self.assertGreaterEqual(cleaned.rasio_ntb_output, MIN_NTB_RATIO)
         self.assertLessEqual(cleaned.rasio_ntb_output, MAX_NTB_RATIO)
+
+    def test_m12_and_selisih_never_negative(self):
+        """Uji kepatuhan: m/12 tidak boleh minus dan selisih tidak boleh minus untuk kasus gaji besar"""
+        # Kasus Apotek dengan omzet 243M, gaji 125M, NTB awal 185M
+        raw_apotek = RawRecord(
+            row_idx=2264,
+            no=2260.0,
+            link="https://fasih.bps.go.id/test2264",
+            link_edit="https://fasih.bps.go.id/test2264/edit",
+            nama_usaha="APOTEK TEMPILANG",
+            kategori="G",
+            gaji=125000000.0,
+            biaya_produksi=0.0,
+            cogs=None,
+            biaya_operasional=15000000.0,
+            biaya_non_operasional=0.0,
+            pendapatan_utama=243000000.0,
+            pendapatan_lain=None,
+            ntb_awal=185000000.0,
+            rasio_bawah=0.64,
+            rasio_atas=0.78,
+            status_awal="DI ATAS 0.78",
+            petugas="Fadil Julianto",
+            sudah_diperbaiki=False,
+            tindak_lanjut=None,
+            catatan=None,
+            rasio_awal=0.938
+        )
+        cleaned_apotek = self.cleaner_lapangan.clean_record(raw_apotek)
+
+        # 1. m/12 dan pendapatan per tahun HARUS >= 0
+        self.assertGreaterEqual(cleaned_apotek.pendapatan_per_bulan, 0.0)
+        self.assertGreaterEqual(cleaned_apotek.pendapatan_per_tahun, 0.0)
+
+        # 2. Selisih NTB HARUS >= 0 (bebas minus)
+        self.assertGreaterEqual(cleaned_apotek.selisih_ntb, 0.0)
+        self.assertEqual(cleaned_apotek.ntb_awal, raw_apotek.ntb_awal)
+        self.assertGreaterEqual(cleaned_apotek.ntb_adj, raw_apotek.ntb_awal)
+
+        # 3. Rasio COGS dan NTB hijau
+        self.assertIsNotNone(cleaned_apotek.rasio_cogs)
+        self.assertGreaterEqual(cleaned_apotek.rasio_cogs, MIN_COGS_MARGIN)
+        self.assertLessEqual(cleaned_apotek.rasio_cogs, MAX_COGS_MARGIN)
+        self.assertGreaterEqual(cleaned_apotek.rasio_ntb_output, MIN_NTB_RATIO)
+        self.assertLessEqual(cleaned_apotek.rasio_ntb_output, MAX_NTB_RATIO)
 
     def test_safe_float_helpers(self):
         """Uji konversi aman nilai float dari string error Excel seperti #DIV/0! dan #VALUE!"""

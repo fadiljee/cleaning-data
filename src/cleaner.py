@@ -179,13 +179,17 @@ class DataCleaner:
                     catatan="Rekonstruksi omzet, COGS, dan biaya dari NTB awal survei (data omzet mentah kosong)"
                 )
 
+        # Biaya tetap yang wajib tertutupi NTB agar m/12 >= 0
+        fixed_cost = max(raw.gaji + raw.biaya_non_operasional - (raw.pendapatan_lain or 0.0), 0.0)
+        min_required_ntb = max(raw.ntb_awal, fixed_cost, 0.0)
+
         # Untung sedikit: minimal Rp 500.000 s.d. 2% dari NTB awal
-        delta = max(500000.0, round((max(raw.ntb_awal, 1000000.0) * 0.02) / 50000) * 50000)
+        delta = max(500000.0, round((max(min_required_ntb, 1000000.0) * 0.02) / 50000) * 50000)
 
         if non_trade:
             # 1. Usaha Tanpa COGS (salah penarikan kode KBLI, jasa, perantara komoditas)
             new_cogs = None
-            target_ntb = raw.ntb_awal + delta
+            target_ntb = min_required_ntb + delta
             target_out = target_ntb / TARGET_NTB_RATIO
             needed_pend = round(target_out / 100000) * 100000
             new_pend = max(raw.pendapatan_utama, min(raw.pendapatan_utama * 1.50, needed_pend))
@@ -197,10 +201,11 @@ class DataCleaner:
             ntb_calc = out_calc - ba_calc
             selisih_calc = ntb_calc - raw.ntb_awal
 
-            # Jika selisih masih minus, sesuaikan biaya antara agar selisih tetap positif (+500rb)
-            if selisih_calc < 0:
-                ntb_calc = raw.ntb_awal + 500000.0
-                out_calc = new_pend
+            # Jika selisih masih minus atau NTB belum menutupi biaya tetap, sesuaikan biaya antara
+            if selisih_calc < 0 or ntb_calc < min_required_ntb:
+                ntb_calc = min_required_ntb + 500000.0
+                out_calc = max(new_pend, round((ntb_calc / TARGET_NTB_RATIO) / ROUNDING_BASE) * ROUNDING_BASE)
+                new_pend = out_calc
                 ba_calc = max(out_calc - ntb_calc, 0.0)
                 new_prod = round((ba_calc * 0.4) / ROUNDING_BASE) * ROUNDING_BASE
                 new_ops = max(ba_calc - new_prod, 0.0)
@@ -214,7 +219,7 @@ class DataCleaner:
             new_catatan = "Koreksi salah penarikan KBLI (usaha jasa/keuangan tanpa COGS)"
         else:
             # 2. Usaha Perdagangan Reguler dengan COGS
-            target_ntb = max(raw.ntb_awal, 1000000.0) + delta
+            target_ntb = max(min_required_ntb, 1000000.0) + delta
             target_out = target_ntb / TARGET_NTB_RATIO
             ba_target = target_out - target_ntb
             ba_target = math.floor(ba_target / ROUNDING_BASE) * ROUNDING_BASE
@@ -261,7 +266,11 @@ class DataCleaner:
         cogs_calc_val = new_cogs if new_cogs is not None else 0.0
         pend_lain_val = raw.pendapatan_lain or 0.0
         pend_tahun = (new_pend + pend_lain_val) - (raw.gaji + new_prod + cogs_calc_val + new_ops + raw.biaya_non_operasional)
+        if abs(pend_tahun) < 1e-6:
+            pend_tahun = 0.0
         pend_bulan = pend_tahun / 12.0
+        if abs(pend_bulan) < 1e-6:
+            pend_bulan = 0.0
 
         ba_target_bawah = out_calc * (1.0 - raw.rasio_bawah)
         ba_target_atas = out_calc * (1.0 - raw.rasio_atas)
@@ -269,13 +278,11 @@ class DataCleaner:
         pend_target_bawah = cogs_calc_val - (ba_calc / (raw.rasio_bawah - 1.0)) if raw.rasio_bawah != 1.0 else 0.0
         pend_target_atas = cogs_calc_val - (ba_calc / (raw.rasio_atas - 1.0)) if raw.rasio_atas != 1.0 else 0.0
 
-        # Proteksi: jika terdapat kondisi di mana selisih minus,
-        # ubah selisih menjadi 0 (nol) agar bebas minus tanpa membengkakkan angka biaya/omzet.
+        # Proteksi selisih bebas minus dan NTB awal asli tetap dipertahankan
         if selisih_calc < 0.0:
             selisih_calc = 0.0
-            ntb_awal_record = ntb_calc
-        else:
-            ntb_awal_record = raw.ntb_awal
+            ntb_calc = max(raw.ntb_awal, fixed_cost)
+        ntb_awal_record = raw.ntb_awal
 
         return CleanedRecord(
             row_idx=raw.row_idx,

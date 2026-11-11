@@ -251,3 +251,4 @@ Lembar kerja utama `LK` hasil pembersihan terdiri dari 33 kolom terstandarisasi:
 | **Distribusi Selisih NTB** | Untung dan Nol | Sesuai Data Lapangan | 93 Usaha (Rp 0) / 257 Usaha (> Rp 0) | 39 Usaha (Rp 0) / 311 Usaha (> Rp 0) | Sesuai Lapangan |
 | **Kolom Link Edit** | Kolom B | Disertakan & Aktif (Hyperlink) | Disertakan & Aktif (Hyperlink) | Disertakan & Aktif (Hyperlink) | Lengkap |
 | **Checklist Selesai (TRUE)** | 100% | 9.451 / 9.451 (100%) | 350 / 350 (100%) | 350 / 350 (100%) | Lengkap |
+
